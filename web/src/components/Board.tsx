@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { useGameSounds } from "@freegamestore/games";
 import {
   type GameState,
   HUMAN_SEAT,
@@ -54,15 +55,37 @@ export function Board() {
   const [state, dispatch] = useReducer(reducer, undefined, newGame);
   const [riichiMode, setRiichiMode] = useState(false);
   const lastDiscardRef = useRef<HTMLDivElement | null>(null);
+  const sounds = useGameSounds();
+  const soundsRef = useRef(sounds);
+  soundsRef.current = sounds;
+  const endedRef = useRef(false);
 
   // Bot turns advance automatically.
   useEffect(() => {
     if (state.phase === "ended") return;
     if (state.active === HUMAN_SEAT) return;
     if (state.phase !== "awaiting-discard") return;
-    const t = setTimeout(() => dispatch({ type: "bot-step" }), 700);
+    const t = setTimeout(() => {
+      soundsRef.current.playTick();
+      dispatch({ type: "bot-step" });
+    }, 700);
     return () => clearTimeout(t);
   }, [state.active, state.phase]);
+
+  // Fire end-of-hand sounds when the result resolves.
+  useEffect(() => {
+    if (state.phase === "ended" && !endedRef.current) {
+      endedRef.current = true;
+      const kind = state.result?.kind;
+      if (kind === "tsumo" || kind === "ron") {
+        soundsRef.current.playClear();
+      } else if (kind === "draw") {
+        soundsRef.current.playGameOver();
+      }
+    } else if (state.phase !== "ended") {
+      endedRef.current = false;
+    }
+  }, [state.phase, state.result]);
 
   const onTileClick = useCallback(
     (handIndex: number) => {
@@ -71,19 +94,30 @@ export function Board() {
       if (riichiMode) {
         const next = declareRiichi(state, handIndex);
         if (next) {
+          soundsRef.current.playTick();
           dispatch({ type: "riichi", handIndex });
           setRiichiMode(false);
         }
         return;
       }
+      soundsRef.current.playTick();
       dispatch({ type: "discard", handIndex });
     },
     [state, riichiMode],
   );
 
-  const onTsumo = () => dispatch({ type: "tsumo" });
-  const onRon = () => dispatch({ type: "ron" });
-  const onRiichi = () => setRiichiMode((m) => !m);
+  const onTsumo = () => {
+    soundsRef.current.playTick();
+    dispatch({ type: "tsumo" });
+  };
+  const onRon = () => {
+    soundsRef.current.playTick();
+    dispatch({ type: "ron" });
+  };
+  const onRiichi = () => {
+    soundsRef.current.playTick();
+    setRiichiMode((m) => !m);
+  };
   const onNewHand = () => {
     setRiichiMode(false);
     dispatch({ type: "new-game" });
