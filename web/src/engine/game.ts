@@ -11,10 +11,10 @@
 //   - On wall exhaustion: ryuukyoku (exhaustive draw). For v0.2 we skip
 //     tenpai-payments and just end the hand at zero.
 
-import { evaluateHand, isTenpai } from "./evaluator";
+import { evaluateHand, isTenpai, waits as computeWaits } from "./evaluator";
 import { detectYaku, type Wind } from "./yaku";
 import { scoreHand } from "./score";
-import { sortTiles, type TileId } from "./tiles";
+import { isHonor, isTerminal, numberOf, sortTiles, toCounts, type TileId } from "./tiles";
 import { dealHand, drawTile, indicatorToDora, type Wall } from "./wall";
 
 export type Seat = 0 | 1 | 2 | 3;
@@ -25,6 +25,12 @@ export interface PlayerState {
   discards: TileId[];
   riichiDeclared: boolean;
   riichiTurn: number | null; // turn count when riichi was declared
+  /**
+   * True between riichi declaration and the declarer's next discard. Wins
+   * within this window (ron off anyone, or tsumo on the next draw) earn the
+   * ippatsu bonus han.
+   */
+  ippatsuActive: boolean;
 }
 
 export interface RoundResult {
@@ -65,6 +71,7 @@ export function newGame(): GameState {
     discards: [],
     riichiDeclared: false,
     riichiTurn: null,
+    ippatsuActive: false,
   }));
 
   const state: GameState = {
@@ -159,6 +166,12 @@ export function discard(state: GameState, handIndex: number): GameState {
   next.players[seat]!.discards.push(tile);
   next.lastDiscard = { tile, from: seat };
   next.lastDrawn = null;
+  // A discard by the riichi-declarer closes their ippatsu window.
+  // (The declaration discard itself doesn't close it because declareRiichi
+  // sets the flag *after* calling this function.)
+  if (next.players[seat]!.ippatsuActive) {
+    next.players[seat]!.ippatsuActive = false;
+  }
   next.active = nextSeat(seat);
   next.phase = "awaiting-draw";
   return next;
@@ -197,7 +210,11 @@ export function declareRiichi(state: GameState, handIndex: number): GameState | 
   next.players[seat]!.riichiTurn = state.turn;
   next.scores[seat] -= RIICHI_BET;
   // The discard is part of the riichi declaration.
-  return discard(next, handIndex);
+  const afterDiscard = discard(next, handIndex);
+  // Open the ippatsu window — set AFTER the discard so the discard's own
+  // ippatsu-clearing branch doesn't immediately close it.
+  afterDiscard.players[seat]!.ippatsuActive = true;
+  return afterDiscard;
 }
 
 /** Try to declare tsumo on the just-drawn tile. */
@@ -210,7 +227,7 @@ export function declareTsumo(state: GameState): GameState | null {
   const winningTile = state.lastDrawn!;
   const ctx = {
     riichi: player.riichiDeclared,
-    ippatsu: player.riichiDeclared && state.turn === (player.riichiTurn ?? -1) + 1,
+    ippatsu: player.ippatsuActive,
     tsumo: true,
     roundWind: state.roundWind,
     seatWind: seatWind(seat, state.dealer),
@@ -261,7 +278,7 @@ export function commitRon(state: GameState): GameState | null {
 
   const ctx = {
     riichi: player.riichiDeclared,
-    ippatsu: player.riichiDeclared && state.turn === (player.riichiTurn ?? -1) + 1,
+    ippatsu: player.ippatsuActive,
     tsumo: false,
     roundWind: state.roundWind,
     seatWind: seatWind(HUMAN_SEAT, state.dealer),
@@ -305,19 +322,48 @@ export function botDiscard(state: GameState): GameState {
   return discard(state, idx);
 }
 
+/**
+ * "Usefulness" heuristic for bot discard selection. Each tile gets a score
+ * based on how many pair/run partners it has in hand; the tile with the
+ * lowest score is discarded. This is a poor man's shanten-distance: it
+ * roughly tracks how many ways the tile contributes to a meld.
+ *
+ *   - +1 per other copy in hand (pair / triplet potential)
+ *   - +1 for each immediate same-suit neighbour (n±1 — ryanmen / shuntsu)
+ *   - +0.5 for each same-suit kanchan partner (n±2 — gapped wait)
+ *   - small penalty on honors / terminals so they're preferred discards on ties
+ *
+ * This makes bots roughly approximate beginner play: keep pairs and runs,
+ * throw out lone honors / orphan middles. It is NOT competitive AI but it
+ * stops bots from gifting the human winning tiles every turn.
+ */
 function pickBotDiscardIndex(hand: TileId[]): number {
-  // Simple heuristic: discard the first isolated honor or terminal we find;
-  // otherwise discard a random tile.
+  const counts = toCounts(hand);
+  let worstIdx = 0;
+  let worstScore = Number.POSITIVE_INFINITY;
+
   for (let i = 0; i < hand.length; i++) {
     const t = hand[i]!;
-    if (t >= 27) {
-      // honor — discard if only one copy
-      let count = 0;
-      for (const u of hand) if (u === t) count++;
-      if (count === 1) return i;
+    let score = 0;
+    // Same-tile partners (counts includes self, so subtract 1).
+    score += (counts[t] ?? 0) - 1;
+    if (!isHonor(t)) {
+      const n = numberOf(t);
+      if (n > 1 && (counts[t - 1] ?? 0) > 0) score += 1;
+      if (n < 9 && (counts[t + 1] ?? 0) > 0) score += 1;
+      if (n > 2 && (counts[t - 2] ?? 0) > 0) score += 0.5;
+      if (n < 8 && (counts[t + 2] ?? 0) > 0) score += 0.5;
+    }
+    // Bias toward discarding less-flexible tiles on ties.
+    if (isHonor(t)) score -= 0.15;
+    else if (isTerminal(t)) score -= 0.05;
+
+    if (score < worstScore) {
+      worstScore = score;
+      worstIdx = i;
     }
   }
-  return Math.floor(Math.random() * hand.length);
+  return worstIdx;
 }
 
 // ── Score transfers ──
@@ -373,7 +419,7 @@ export function canDeclareTsumo(state: GameState): boolean {
   // Must have at least one yaku.
   const ctx = {
     riichi: player.riichiDeclared,
-    ippatsu: player.riichiDeclared && state.turn === (player.riichiTurn ?? -1) + 1,
+    ippatsu: player.ippatsuActive,
     tsumo: true,
     roundWind: state.roundWind,
     seatWind: seatWind(HUMAN_SEAT, state.dealer),
@@ -382,6 +428,53 @@ export function canDeclareTsumo(state: GameState): boolean {
   };
   const yaku = detectYaku(player.hand, state.lastDrawn!, ctx);
   return !!yaku && yaku.yaku.length > 0;
+}
+
+/**
+ * Returns the set of tile ids that, if added to the human's current 13-tile
+ * hand, would complete a winning shape. Empty if the human isn't tenpai
+ * (or it's their discard turn and they're holding 14 tiles).
+ *
+ * Caveat: this only checks SHAPE completion. Some "winning" tiles may yield
+ * a yaku-less hand that can't actually be declared on ron; we don't filter
+ * those out here because the cost is low and the UI is informational.
+ */
+export function humanWaits(state: GameState): TileId[] {
+  const hand = state.players[HUMAN_SEAT]!.hand;
+  // Use the 13-tile representation. If it's the human's discard turn (14
+  // tiles), check waits over each possible discard and union them; otherwise
+  // use the hand directly.
+  if (hand.length === 13) return computeWaits(hand);
+  if (hand.length === 14) {
+    const all = new Set<TileId>();
+    for (let i = 0; i < hand.length; i++) {
+      const remaining = [...hand];
+      remaining.splice(i, 1);
+      for (const w of computeWaits(remaining)) all.add(w);
+    }
+    return [...all].sort((a, b) => a - b);
+  }
+  return [];
+}
+
+/**
+ * For a 14-tile human hand on their discard step, return the set of hand
+ * indices that, when discarded, leave a tenpai shape. Used to highlight
+ * legal discards during riichi declaration so the user doesn't trial-and-
+ * error their way through.
+ */
+export function legalRiichiDiscardIndices(state: GameState): number[] {
+  if (state.phase !== "awaiting-discard") return [];
+  if (state.active !== HUMAN_SEAT) return [];
+  const hand = state.players[HUMAN_SEAT]!.hand;
+  if (hand.length !== 14) return [];
+  const out: number[] = [];
+  for (let i = 0; i < hand.length; i++) {
+    const remaining = [...hand];
+    remaining.splice(i, 1);
+    if (isTenpai(remaining)) out.push(i);
+  }
+  return out;
 }
 
 export function canDeclareRon(state: GameState): boolean {
@@ -393,7 +486,7 @@ export function canDeclareRon(state: GameState): boolean {
   if (!evaluateHand(candidate)) return false;
   const ctx = {
     riichi: player.riichiDeclared,
-    ippatsu: player.riichiDeclared && state.turn === (player.riichiTurn ?? -1) + 1,
+    ippatsu: player.ippatsuActive,
     tsumo: false,
     roundWind: state.roundWind,
     seatWind: seatWind(HUMAN_SEAT, state.dealer),

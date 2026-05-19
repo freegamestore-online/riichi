@@ -13,6 +13,8 @@ import {
   declareRiichi,
   declareTsumo,
   discard,
+  humanWaits,
+  legalRiichiDiscardIndices,
   newGame,
 } from "../engine/game";
 import { glyph, type TileId } from "../engine/tiles";
@@ -154,6 +156,10 @@ export function Board() {
   const doraTile = state.wall.doraIndicators[0]
     ? indicatorToDora(state.wall.doraIndicators[0])
     : null;
+  const waits = humanWaits(state);
+  const isHumanTurn = state.active === HUMAN_SEAT && state.phase === "awaiting-discard";
+  // When riichiMode is on, only some indices are valid discards.
+  const legalRiichiIdx = riichiMode ? new Set(legalRiichiDiscardIndices(state)) : null;
 
   return (
     <div
@@ -211,23 +217,56 @@ export function Board() {
 
       {/* Human hand */}
       <div className="absolute left-0 right-0 bottom-1 flex flex-col items-center gap-2 pointer-events-none">
+        {/* Tenpai / waits row */}
+        {waits.length > 0 && (
+          <div
+            className="flex items-center gap-2 px-3 py-1 rounded-full pointer-events-auto"
+            style={{
+              background: "rgba(0,0,0,0.4)",
+              backdropFilter: "blur(4px)",
+              color: "white",
+            }}
+          >
+            <span
+              className="text-xs font-bold"
+              style={{ color: "#fbbf24", letterSpacing: "0.08em" }}
+            >
+              TENPAI
+            </span>
+            <span className="text-[10px] opacity-60">waiting on</span>
+            <div className="flex gap-1">
+              {waits.map((w) => (
+                <Tile key={w} tile={w} size="sm" />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Hand */}
         <div
           className="flex gap-1 justify-center px-2 pointer-events-auto"
           style={{ maxWidth: "100vw", overflowX: "auto", flexWrap: "nowrap" }}
         >
-          {human.hand.map((t, i) => (
-            <Tile
-              key={`${t}-${i}`}
-              tile={t}
-              size="lg"
-              highlight={riichiMode}
-              recent={i === human.hand.length - 1 && state.lastDrawn !== null}
-              onClick={() => onTileClick(i)}
-            />
-          ))}
+          {human.hand.map((t, i) => {
+            const isLegalRiichiPick = !legalRiichiIdx || legalRiichiIdx.has(i);
+            return (
+              <Tile
+                key={`${t}-${i}`}
+                tile={t}
+                size="lg"
+                highlight={riichiMode && isLegalRiichiPick}
+                dim={riichiMode && !isLegalRiichiPick}
+                recent={i === human.hand.length - 1 && state.lastDrawn !== null}
+                onClick={
+                  // In riichi mode, only legal discards are clickable.
+                  legalRiichiIdx && !isLegalRiichiPick ? undefined : () => onTileClick(i)
+                }
+              />
+            );
+          })}
         </div>
 
-        <div className="flex items-center gap-2 px-3 py-2 pointer-events-auto">
+        <div className="flex items-center gap-2 px-3 py-2 pointer-events-auto flex-wrap justify-center">
           {(canRiichi || riichiMode) && (
             <Button onClick={onRiichi} variant={riichiMode ? "danger" : "primary"}>
               {riichiMode ? "Cancel riichi" : "Riichi"}
@@ -249,14 +288,20 @@ export function Board() {
             </>
           )}
           <div className="text-xs text-white/80 px-2 flex items-center gap-2">
+            {isHumanTurn && (
+              <span
+                className="px-2 py-0.5 rounded-full text-[10px] font-bold"
+                style={{ background: "#fbbf24", color: "#1a1a1a" }}
+              >
+                YOUR TURN
+              </span>
+            )}
             {state.players[HUMAN_SEAT].riichiDeclared && (
               <span className="px-2 py-1 rounded bg-yellow-500 text-black text-xs font-bold">
                 RIICHI
               </span>
             )}
-            <span>
-              {state.scores[HUMAN_SEAT].toLocaleString()}
-            </span>
+            <span>{state.scores[HUMAN_SEAT].toLocaleString()}</span>
           </div>
         </div>
       </div>
@@ -274,12 +319,13 @@ interface TileProps {
   tile: TileId;
   size: "sm" | "md" | "lg";
   highlight?: boolean;
+  dim?: boolean;
   recent?: boolean;
   onClick?: () => void;
   rotation?: 0 | 90 | 180 | 270;
 }
 
-function Tile({ tile, size, highlight, recent, onClick, rotation = 0 }: TileProps) {
+function Tile({ tile, size, highlight, dim, recent, onClick, rotation = 0 }: TileProps) {
   const dims =
     size === "lg"
       ? { w: 48, h: 64, font: 36 }
@@ -299,8 +345,10 @@ function Tile({ tile, size, highlight, recent, onClick, rotation = 0 }: TileProp
         color: "#1a1a1a",
         cursor: onClick ? "pointer" : "default",
         outline: highlight ? "2px solid #f59e0b" : undefined,
+        opacity: dim ? 0.35 : 1,
+        filter: dim ? "grayscale(0.5)" : undefined,
         transform: `rotate(${rotation}deg)${recent ? " translateY(-3px)" : ""}`,
-        transition: "transform 0.1s",
+        transition: "transform 0.1s, opacity 0.15s",
         padding: 0,
       }}
     >
