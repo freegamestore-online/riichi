@@ -175,8 +175,8 @@ describe("calls (pon + chi)", () => {
     expect(next.active).toBe(1);
     expect(next.phase).toBe("awaiting-discard");
     expect(next.players[1].melds.length).toBe(1);
-    expect(next.players[1].melds[0].type).toBe("pon");
-    expect(next.players[1].melds[0].baseTile).toBe(13);
+    expect(next.players[1].melds[0]!.type).toBe("pon");
+    expect(next.players[1].melds[0]!.baseTile).toBe(13);
     expect(next.players[1].hand.length).toBe(handBefore - 2);
     expect(next.players[0].discards.length).toBe(0);
   });
@@ -209,8 +209,8 @@ describe("calls (pon + chi)", () => {
     expect(next.active).toBe(1);
     expect(next.phase).toBe("awaiting-discard");
     expect(next.players[1].melds.length).toBe(1);
-    expect(next.players[1].melds[0].type).toBe("chi");
-    expect(next.players[1].melds[0].baseTile).toBe(2);
+    expect(next.players[1].melds[0]!.type).toBe("chi");
+    expect(next.players[1].melds[0]!.baseTile).toBe(2);
     // 3m and 4m removed from hand; 5m came from the discard so isn't in hand.
     expect(next.players[1].hand.some((t) => t === 2)).toBe(false);
     expect(next.players[1].hand.some((t) => t === 3)).toBe(false);
