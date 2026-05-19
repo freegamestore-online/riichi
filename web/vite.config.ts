@@ -38,7 +38,7 @@ export default defineConfig({
         short_name: "Riichi",
         description: "Riichi Mahjong — free forever",
         start_url: "/",
-        display: "standalone", orientation: "any", min_viewport_width: 360,
+        display: "standalone", orientation: "any",
         background_color: "#0e3b21",
         theme_color: "#10b981",
         icons: [
