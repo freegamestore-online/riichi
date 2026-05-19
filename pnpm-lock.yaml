@@ -11,8 +11,8 @@ importers:
   web:
     dependencies:
       '@freegamestore/games':
-        specifier: ^0.13.0
-        version: 0.13.0(react@19.2.6)
+        specifier: ^0.13.1
+        version: 0.13.1(react@19.2.6)
       react:
         specifier: ^19
         version: 19.2.6
@@ -728,8 +728,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@freegamestore/games@0.13.0':
-    resolution: {integrity: sha512-/2T6pXa6QNJxlvK9ToPkoQBu9Rq68oLRPJQuX18YQd/LFKT8Uc0nK072zUaDSuU5rUz6ejSMKlmjUgcMLm0S0g==}
+  '@freegamestore/games@0.13.1':
+    resolution: {integrity: sha512-s0WRj8XeFQbhvn7FIBxOrB2Mp8ogugw0gFSRcF6vLpSezNCFhATOA4UZBcfW4lnzkAb7OjaCq8M7DsX3AXXKLQ==}
     engines: {node: '>=22'}
     peerDependencies:
       react: ^19.0.0
@@ -1068,6 +1068,9 @@ packages:
 
   '@types/estree@1.0.8':
     resolution: {integrity: sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w==}
+
+  '@types/estree@1.0.9':
+    resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
 
   '@types/node@22.19.19':
     resolution: {integrity: sha512-dyh/xO2Fh5bYrfWaaqGrRQQGkNdmYw6AmaAUvYeUMNTWQtvb796ikLdmTchRmOlOiIJ1TDXfWgVx1QkUlQ6Hew==}
@@ -3012,7 +3015,7 @@ snapshots:
   '@esbuild/win32-x64@0.25.12':
     optional: true
 
-  '@freegamestore/games@0.13.0(react@19.2.6)':
+  '@freegamestore/games@0.13.1(react@19.2.6)':
     dependencies:
       react: 19.2.6
 
@@ -3082,7 +3085,7 @@ snapshots:
 
   '@rollup/pluginutils@5.3.0(rollup@4.60.4)':
     dependencies:
-      '@types/estree': 1.0.8
+      '@types/estree': 1.0.9
       estree-walker: 2.0.2
       picomatch: 4.0.4
     optionalDependencies:
@@ -3269,6 +3272,8 @@ snapshots:
   '@types/deep-eql@4.0.2': {}
 
   '@types/estree@1.0.8': {}
+
+  '@types/estree@1.0.9': {}
 
   '@types/node@22.19.19':
     dependencies:
