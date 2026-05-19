@@ -1,21 +1,14 @@
 {
-  "name": "riichi",
-  "short_name": "riichi",
+  "name": "Riichi",
+  "short_name": "Riichi",
+  "description": "Riichi Mahjong — free forever",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#2563eb",
+  "background_color": "#0e3b21",
+  "theme_color": "#10b981",
   "icons": [
-    {
-      "src": "/icons/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png"
-    },
-    {
-      "src": "/icons/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png"
-    }
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
   ],
   "orientation": "any",
   "min_viewport_width": 360
