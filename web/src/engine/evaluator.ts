@@ -1,18 +1,20 @@
 // ── Hand evaluator ──
 //
-// Given a 14-tile hand, determine whether it forms a complete winning shape,
-// and return one canonical decomposition. Three shapes are recognised:
+// Given a hand (concealed tiles + open melds claimed off other players),
+// determine whether it forms a complete winning shape and return one canonical
+// decomposition. Three shapes are recognised:
 //
 //   1. Standard:    4 sets + 1 pair, where each set is a chi (consecutive run
 //                   of three in one suit) or a pon (three of the same tile).
-//   2. Chiitoitsu:  7 distinct pairs (14 tiles, no two pairs share a tile).
+//                   Open melds count toward the 4-set requirement and the
+//                   evaluator only decomposes the concealed portion.
+//   2. Chiitoitsu:  7 distinct pairs in fully-concealed 14 tiles.
 //   3. Kokushi:     13 terminals/honors all present plus one of them doubled.
+//                   Concealed-only.
 //
-// We return the first valid decomposition we find. Some yaku (toitoi vs
-// iipeikou, etc.) can vary across alternative decompositions — for v0.2 this
-// first-decomposition limitation is acceptable.
+// Both chiitoitsu and kokushi require a fully concealed hand by definition.
 
-import { type TileId, toCounts, isHonor } from "./tiles";
+import { isHonor, toCounts, type TileId } from "./tiles";
 
 export type Meld =
   | { type: "chi"; baseTile: TileId } // consecutive run starting at baseTile
@@ -25,29 +27,43 @@ export type WinShape =
 
 const TERMINALS_AND_HONORS: TileId[] = [0, 8, 9, 17, 18, 26, 27, 28, 29, 30, 31, 32, 33];
 
-export function evaluateHand(tiles: TileId[]): WinShape | null {
-  if (tiles.length !== 14) return null;
-  const counts = toCounts(tiles);
-  return tryKokushi(counts) ?? tryChiitoitsu(counts) ?? tryStandard(counts);
+/**
+ * Evaluate a hand for win. With no open melds, expect 14 concealed tiles.
+ * With `openMeldCount` open melds, expect 14 - 3·openMeldCount concealed.
+ * The returned standard shape's `melds` list contains ONLY the concealed
+ * decomposition — callers responsible for the open melds add them back.
+ */
+export function evaluateHand(concealedTiles: TileId[], openMeldCount = 0): WinShape | null {
+  const expectedConcealed = 14 - 3 * openMeldCount;
+  if (concealedTiles.length !== expectedConcealed) return null;
+  const counts = toCounts(concealedTiles);
+  // Chiitoitsu and kokushi require fully concealed hand.
+  if (openMeldCount === 0) {
+    const k = tryKokushi(counts);
+    if (k) return k;
+    const c = tryChiitoitsu(counts);
+    if (c) return c;
+  }
+  return tryStandard(counts);
 }
 
 // 1 tile away from winning?
-export function isTenpai(tiles: TileId[]): boolean {
-  if (tiles.length !== 13) return false;
+export function isTenpai(concealedTiles: TileId[], openMeldCount = 0): boolean {
+  if (concealedTiles.length !== 13 - 3 * openMeldCount) return false;
   for (let i = 0; i < 34; i++) {
-    const candidate = [...tiles, i as TileId];
-    if (evaluateHand(candidate)) return true;
+    const candidate = [...concealedTiles, i as TileId];
+    if (evaluateHand(candidate, openMeldCount)) return true;
   }
   return false;
 }
 
 // All tiles that would complete the tenpai hand.
-export function waits(tiles: TileId[]): TileId[] {
-  if (tiles.length !== 13) return [];
+export function waits(concealedTiles: TileId[], openMeldCount = 0): TileId[] {
+  if (concealedTiles.length !== 13 - 3 * openMeldCount) return [];
   const out: TileId[] = [];
   for (let i = 0; i < 34; i++) {
-    const candidate = [...tiles, i as TileId];
-    if (evaluateHand(candidate)) out.push(i);
+    const candidate = [...concealedTiles, i as TileId];
+    if (evaluateHand(candidate, openMeldCount)) out.push(i);
   }
   return out;
 }

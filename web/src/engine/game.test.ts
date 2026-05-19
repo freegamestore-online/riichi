@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   advance,
   botDiscard,
+  callChi,
+  callPon,
+  canPon,
+  chiOptions,
   commitRon,
   declareTsumoFor,
   discard,
@@ -144,6 +148,81 @@ describe("multi-hand round", () => {
     const next = nextHand(ended);
     expect(next).not.toBeNull();
     expect(next?.roundComplete).toBe(true);
+  });
+});
+
+describe("calls (pon + chi)", () => {
+  it("canPon detects when the caller has 2 of the discarded tile", () => {
+    const s = newGame();
+    s.players[1].hand = parseHand("55p1234567m1234s");
+    expect(s.players[1].hand.length).toBe(13);
+    s.lastDiscard = { tile: 13, from: 0 }; // 5p
+    s.phase = "awaiting-draw";
+    expect(canPon(s, 1)).toBe(true);
+    expect(canPon(s, 2)).toBe(false);
+  });
+
+  it("callPon moves 2 matching tiles into an open meld and shifts the turn", () => {
+    const s = newGame();
+    s.players[1].hand = parseHand("55p1234567m1234s");
+    s.lastDiscard = { tile: 13, from: 0 };
+    s.phase = "awaiting-draw";
+    s.players[0].discards = [13];
+    const handBefore = s.players[1].hand.length;
+    const next = callPon(s, 1);
+    expect(next).not.toBeNull();
+    if (!next) return;
+    expect(next.active).toBe(1);
+    expect(next.phase).toBe("awaiting-discard");
+    expect(next.players[1].melds.length).toBe(1);
+    expect(next.players[1].melds[0].type).toBe("pon");
+    expect(next.players[1].melds[0].baseTile).toBe(13);
+    expect(next.players[1].hand.length).toBe(handBefore - 2);
+    expect(next.players[0].discards.length).toBe(0);
+  });
+
+  it("chiOptions returns base tiles only for the next-seat with a valid run", () => {
+    const s = newGame();
+    // seat 0 discards 5m. Only seat 1 can chi.
+    s.players[1].hand = parseHand("345678m11111p2s"); // includes 3-4 and 6-7 around 5m
+    while (s.players[1].hand.length < 13) s.players[1].hand.push(0);
+    s.lastDiscard = { tile: 4, from: 0 }; // 5m
+    s.phase = "awaiting-draw";
+    const opts = chiOptions(s, 1);
+    // Should include base 3 (3-4-5m), base 4 (4-5-6m), base 5 (5-6-7m).
+    expect(opts).toContain(2); // 3m id = 2
+    expect(opts).toContain(3);
+    expect(opts).toContain(4);
+    // Non-next-seat can never chi.
+    expect(chiOptions(s, 2)).toEqual([]);
+  });
+
+  it("callChi forms the run, claims the tile, and switches turn", () => {
+    const s = newGame();
+    s.players[1].hand = [...parseHand("34m"), ...parseHand("123456789p11s")];
+    s.lastDiscard = { tile: 4, from: 0 }; // 5m
+    s.players[0].discards = [4];
+    s.phase = "awaiting-draw";
+    const next = callChi(s, 1, 2); // chi with base 3m → 3-4-5m
+    expect(next).not.toBeNull();
+    if (!next) return;
+    expect(next.active).toBe(1);
+    expect(next.phase).toBe("awaiting-discard");
+    expect(next.players[1].melds.length).toBe(1);
+    expect(next.players[1].melds[0].type).toBe("chi");
+    expect(next.players[1].melds[0].baseTile).toBe(2);
+    // 3m and 4m removed from hand; 5m came from the discard so isn't in hand.
+    expect(next.players[1].hand.some((t) => t === 2)).toBe(false);
+    expect(next.players[1].hand.some((t) => t === 3)).toBe(false);
+  });
+
+  it("riichi-declared players can't pon or chi", () => {
+    const s = newGame();
+    s.players[1].hand = parseHand("55p1234567m1234s");
+    s.players[1].riichiDeclared = true;
+    s.lastDiscard = { tile: 13, from: 0 };
+    s.phase = "awaiting-draw";
+    expect(canPon(s, 1)).toBe(false);
   });
 });
 

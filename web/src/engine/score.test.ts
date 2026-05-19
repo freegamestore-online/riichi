@@ -13,7 +13,7 @@ describe("scoring: integration", () => {
     const shape = evaluateHand(tiles);
     expect(shape).not.toBeNull();
     if (!shape) return;
-    const yaku = detectYaku(tiles, winningTile, {
+    const yaku = detectYaku(tiles, winningTile, [], {
       riichi: true,
       ippatsu: false,
       tsumo: true,
@@ -50,7 +50,7 @@ describe("scoring: integration", () => {
     const shape = evaluateHand(tiles);
     expect(shape?.kind).toBe("chiitoitsu");
     if (!shape) return;
-    const yaku = detectYaku(tiles, 18, {
+    const yaku = detectYaku(tiles, 18, [], {
       riichi: false,
       ippatsu: false,
       tsumo: true,
@@ -76,7 +76,7 @@ describe("scoring: integration", () => {
     const shape = evaluateHand(tiles);
     expect(shape?.kind).toBe("kokushi");
     if (!shape) return;
-    const yaku = detectYaku(tiles, 27, {
+    const yaku = detectYaku(tiles, 27, [], {
       riichi: false,
       ippatsu: false,
       tsumo: true,

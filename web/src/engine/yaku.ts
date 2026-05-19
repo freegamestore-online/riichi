@@ -18,7 +18,7 @@
 // double riichi, sanshoku, ittsuu, chanta, junchan, sankantsu, daisangen,
 // shousangen, yakuman set.
 
-import { evaluateHand, type WinShape } from "./evaluator";
+import { evaluateHand, type Meld, type WinShape } from "./evaluator";
 import {
   type TileId,
   isHonor,
@@ -31,6 +31,7 @@ import {
   Suit,
   toCounts,
 } from "./tiles";
+import type { OpenMeld } from "./game";
 
 export type Wind = 0 | 1 | 2 | 3; // E S W N
 
@@ -63,17 +64,29 @@ export interface YakuResult {
 }
 
 export function detectYaku(
-  tiles14: TileId[],
+  concealedTiles: TileId[],
   winningTile: TileId,
+  openMelds: OpenMeld[],
   ctx: WinContext,
 ): YakuResult | null {
-  const shape = evaluateHand(tiles14);
+  const shape = evaluateHand(concealedTiles, openMelds.length);
   if (!shape) return null;
+
+  // Yaku checks look at the entire 14-tile hand for tile-content predicates.
+  // Build that here from concealed + open meld tiles.
+  const allTiles: TileId[] = [...concealedTiles];
+  for (const m of openMelds) {
+    if (m.type === "pon") {
+      allTiles.push(m.baseTile, m.baseTile, m.baseTile);
+    } else {
+      allTiles.push(m.baseTile, (m.baseTile + 1) as TileId, (m.baseTile + 2) as TileId);
+    }
+  }
 
   const yaku: YakuEntry[] = [];
 
-  // ── Riichi family (state-driven) ──
-  if (ctx.riichi) {
+  // ── Riichi family (state-driven, closed-only) ──
+  if (ctx.riichi && ctx.concealed) {
     yaku.push({ name: "Riichi", han: 1 });
     if (ctx.ippatsu) yaku.push({ name: "Ippatsu", han: 1 });
   }
@@ -84,18 +97,17 @@ export function detectYaku(
   }
 
   // ── Shape-driven yaku ──
-  yaku.push(...detectShapeYaku(shape, winningTile, ctx));
+  yaku.push(...detectShapeYaku(shape, winningTile, openMelds, ctx));
 
   // ── Tile-content yaku ──
-  if (allSimple(tiles14)) yaku.push({ name: "Tanyao", han: 1 });
+  if (allSimple(allTiles)) yaku.push({ name: "Tanyao", han: 1 });
 
   // ── Suit composition ──
-  const suitYaku = suitCompositionYaku(tiles14, ctx.concealed);
+  const suitYaku = suitCompositionYaku(allTiles, ctx.concealed);
   if (suitYaku) yaku.push(suitYaku);
 
-  // ── Dora (not technically yaku — counted separately, doesn't qualify a
-  //         hand on its own, but adds han). ──
-  const dora = countDora(tiles14, ctx.doraTiles);
+  // ── Dora ──
+  const dora = countDora(allTiles, ctx.doraTiles);
 
   const totalHan = yaku.reduce((s, y) => s + y.han, 0) + dora;
   return { yaku, doraCount: dora, totalHan };
@@ -103,24 +115,35 @@ export function detectYaku(
 
 // ── Shape-derived yaku ──
 
-function detectShapeYaku(shape: WinShape, _winningTile: TileId, ctx: WinContext): YakuEntry[] {
+function detectShapeYaku(
+  shape: WinShape,
+  _winningTile: TileId,
+  openMelds: OpenMeld[],
+  ctx: WinContext,
+): YakuEntry[] {
   const out: YakuEntry[] = [];
 
-  // Chiitoitsu: a yaku in its own right (2 han, closed-only).
+  // Chiitoitsu (closed-only by definition — evaluator already enforced this).
   if (shape.kind === "chiitoitsu") {
     out.push({ name: "Chiitoitsu", han: 2 });
     return out;
   }
 
-  // Kokushi musou: yakuman. For v0.2 we record it as 13 han.
   if (shape.kind === "kokushi") {
     out.push({ name: "Kokushi Musou (yakuman)", han: 13 });
     return out;
   }
 
-  // Standard shape.
-  const pons = shape.melds.filter((m) => m.type === "pon");
-  const chis = shape.melds.filter((m) => m.type === "chi");
+  // Combine concealed decomposition with open melds for shape-level counts.
+  const allConcealedMelds: Meld[] = shape.melds;
+  const openMeldShapes: Meld[] = openMelds.map((m) =>
+    m.type === "pon"
+      ? ({ type: "pon", tile: m.baseTile } as const)
+      : ({ type: "chi", baseTile: m.baseTile } as const),
+  );
+  const allMelds: Meld[] = [...allConcealedMelds, ...openMeldShapes];
+  const pons = allMelds.filter((m) => m.type === "pon");
+  const chis = allMelds.filter((m) => m.type === "chi");
 
   // Yakuhai — each triplet of a value tile is +1 han.
   for (const m of pons) {
@@ -137,8 +160,7 @@ function detectShapeYaku(shape: WinShape, _winningTile: TileId, ctx: WinContext)
     }
   }
 
-  // Pinfu: all chis, non-yakuhai pair. (Simplified: we skip the two-sided-wait
-  // check that real Riichi requires.)
+  // Pinfu: all chis, non-yakuhai pair, closed.
   if (chis.length === 4 && pons.length === 0 && ctx.concealed) {
     const pair = shape.pair;
     const pairIsYakuhai =
@@ -149,11 +171,12 @@ function detectShapeYaku(shape: WinShape, _winningTile: TileId, ctx: WinContext)
     }
   }
 
-  // Iipeikou: two identical chis (closed only).
+  // Iipeikou: two identical chis (closed only — open chis disqualify).
   if (ctx.concealed && chis.length >= 2) {
     const seen = new Set<number>();
     let hasPair = false;
     for (const c of chis) {
+      if (c.type !== "chi") continue;
       if (seen.has(c.baseTile)) {
         hasPair = true;
         break;
@@ -163,7 +186,7 @@ function detectShapeYaku(shape: WinShape, _winningTile: TileId, ctx: WinContext)
     if (hasPair) out.push({ name: "Iipeikou", han: 1 });
   }
 
-  // Toitoi: all pons (or kans, but no kans in v0.2).
+  // Toitoi: all pons (including open pons).
   if (pons.length === 4) {
     out.push({ name: "Toitoi", han: 2 });
   }

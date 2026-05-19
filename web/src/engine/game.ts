@@ -14,17 +14,48 @@
 import { evaluateHand, isTenpai, waits as computeWaits } from "./evaluator";
 import { detectYaku, type Wind } from "./yaku";
 import { scoreHand } from "./score";
-import { isHonor, isTerminal, numberOf, sortTiles, toCounts, type TileId } from "./tiles";
+import {
+  isDragon,
+  isHonor,
+  isTerminal,
+  isWind,
+  numberOf,
+  sortTiles,
+  toCounts,
+  type TileId,
+} from "./tiles";
 import { dealHand, drawTile, indicatorToDora, type Wall } from "./wall";
 
 export type Seat = 0 | 1 | 2 | 3;
 export type Phase = "awaiting-draw" | "awaiting-discard" | "ended";
 
+/**
+ * An open meld on the table — a chi/pon/kan claimed off another player's
+ * discard. The full 14-tile shape for a player is `hand ∪ melds` (each meld
+ * contributes 3 or 4 tiles).
+ */
+export interface OpenMeld {
+  type: "chi" | "pon";
+  /** For chi: the lowest tile of the run. For pon: the triplet tile. */
+  baseTile: TileId;
+  /** The tile we claimed off the discarder. */
+  called: TileId;
+  /** Seat we called from. */
+  from: Seat;
+}
+
 export interface PlayerState {
-  hand: TileId[]; // 13 or 14 (concealed + drawn)
+  /**
+   * Concealed tiles only. With no calls this is 13 (or 14 when it's the
+   * player's discard turn). After one open meld, this is 10 (or 11), etc.
+   */
+  hand: TileId[];
+  /** Discarded pile (own discards). */
   discards: TileId[];
+  /** Open melds claimed off other players. */
+  melds: OpenMeld[];
   riichiDeclared: boolean;
-  riichiTurn: number | null; // turn count when riichi was declared
+  riichiTurn: number | null;
   /**
    * True between riichi declaration and the declarer's next discard. Wins
    * within this window (ron off anyone, or tsumo on the next draw) earn the
@@ -77,6 +108,7 @@ export function newGame(): GameState {
   const players: PlayerState[] = deal.hands.map((h) => ({
     hand: sortTiles(h),
     discards: [],
+    melds: [],
     riichiDeclared: false,
     riichiTurn: null,
     ippatsuActive: false,
@@ -136,6 +168,7 @@ export function nextHand(state: GameState): GameState | null {
   const players: PlayerState[] = deal.hands.map((h) => ({
     hand: sortTiles(h),
     discards: [],
+    melds: [],
     riichiDeclared: false,
     riichiTurn: null,
     ippatsuActive: false,
@@ -169,6 +202,7 @@ function clone(state: GameState): GameState {
       ...p,
       hand: [...p.hand],
       discards: [...p.discards],
+      melds: p.melds.map((m) => ({ ...m })),
     })) as GameState["players"],
     scores: [...state.scores] as GameState["scores"],
     wall: {
@@ -250,10 +284,15 @@ export function discard(state: GameState, handIndex: number): GameState {
   next.active = nextSeat(seat);
   next.phase = "awaiting-draw";
 
-  // Give bots a chance to ron this discard. The human's ron is driven from
-  // the UI so the player can choose, so we only auto-commit bot rons here.
-  const bottedOut = maybeBotRon(next);
-  return bottedOut ?? next;
+  // Resolve post-discard calls in priority order:
+  //   1. Ron (any bot, with human-skip for priority).
+  //   2. Pon (bots auto-call yakuhai).
+  // The human's calls (ron / pon / chi) are surfaced via the UI window.
+  const ronned = maybeBotRon(next);
+  if (ronned) return ronned;
+  const ponned = maybeBotPon(next);
+  if (ponned) return ponned;
+  return next;
 }
 
 /**
@@ -278,11 +317,13 @@ export function declareRiichi(state: GameState, handIndex: number): GameState | 
   if (player.riichiDeclared) return null;
   if (state.scores[seat]! < RIICHI_BET) return null;
   if (handIndex < 0 || handIndex >= player.hand.length) return null;
+  // Riichi requires a closed hand.
+  if (player.melds.length > 0) return null;
 
-  // Build the 13-tile hand that would remain after discarding handIndex.
+  // Build the post-discard concealed hand.
   const remaining = [...player.hand];
   remaining.splice(handIndex, 1);
-  if (!isTenpai(remaining)) return null;
+  if (!isTenpai(remaining, player.melds.length)) return null;
 
   const next = clone(state);
   next.players[seat]!.riichiDeclared = true;
@@ -302,7 +343,9 @@ export function declareTsumoFor(state: GameState, seat: Seat): GameState | null 
   if (state.phase !== "awaiting-discard") return null;
   if (state.active !== seat) return null;
   const player = state.players[seat]!;
-  if (player.hand.length !== 14) return null;
+  // Hand should be (14 - 3·meldCount) tiles at this point.
+  const expectedHand = 14 - 3 * player.melds.length;
+  if (player.hand.length !== expectedHand) return null;
 
   const winningTile = state.lastDrawn!;
   const ctx = {
@@ -312,12 +355,12 @@ export function declareTsumoFor(state: GameState, seat: Seat): GameState | null 
     roundWind: state.roundWind,
     seatWind: seatWind(seat, state.dealer),
     doraTiles: doraTiles(state),
-    concealed: true,
+    concealed: player.melds.length === 0,
   };
-  const yaku = detectYaku(player.hand, winningTile, ctx);
+  const yaku = detectYaku(player.hand, winningTile, player.melds, ctx);
   if (!yaku || yaku.yaku.length === 0) return null;
 
-  const shape = evaluateHand(player.hand);
+  const shape = evaluateHand(player.hand, player.melds.length);
   if (!shape) return null;
 
   const score = scoreHand({
@@ -369,9 +412,12 @@ export function commitRonFor(state: GameState, ronner: Seat): GameState | null {
   if (from === ronner) return null;
 
   const player = state.players[ronner]!;
+  // Concealed hand should be (13 - 3·meldCount) tiles; the discard makes it
+  // (14 - 3·meldCount) which is what the evaluator expects.
+  const expectedConcealed = 13 - 3 * player.melds.length;
+  if (player.hand.length !== expectedConcealed) return null;
   const winningHand = sortTiles([...player.hand, tile]);
-  if (winningHand.length !== 14) return null;
-  const shape = evaluateHand(winningHand);
+  const shape = evaluateHand(winningHand, player.melds.length);
   if (!shape) return null;
 
   const ctx = {
@@ -381,9 +427,9 @@ export function commitRonFor(state: GameState, ronner: Seat): GameState | null {
     roundWind: state.roundWind,
     seatWind: seatWind(ronner, state.dealer),
     doraTiles: doraTiles(state),
-    concealed: true,
+    concealed: player.melds.length === 0,
   };
-  const yaku = detectYaku(winningHand, tile, ctx);
+  const yaku = detectYaku(winningHand, tile, player.melds, ctx);
   if (!yaku || yaku.yaku.length === 0) return null;
 
   const score = scoreHand({
@@ -422,6 +468,166 @@ export function commitRonFor(state: GameState, ronner: Seat): GameState | null {
 /** Human helper (kept for back-compat with the UI). */
 export function commitRon(state: GameState): GameState | null {
   return commitRonFor(state, HUMAN_SEAT);
+}
+
+// ── Open calls (pon / chi) ──
+
+/** Can `seat` pon the tile that was just discarded? */
+export function canPon(state: GameState, seat: Seat): boolean {
+  if (state.phase !== "awaiting-draw") return false;
+  if (!state.lastDiscard) return false;
+  if (state.lastDiscard.from === seat) return false;
+  // Riichi-declared players can't call.
+  if (state.players[seat]!.riichiDeclared) return false;
+  const tile = state.lastDiscard.tile;
+  let count = 0;
+  for (const t of state.players[seat]!.hand) {
+    if (t === tile) count++;
+  }
+  return count >= 2;
+}
+
+/**
+ * Can `seat` chi the tile that was just discarded? Chi is only available
+ * to the player immediately after the discarder (and only on numbered tiles).
+ * Returns the list of valid "base tiles" — the lowest tile of each possible
+ * 3-run. Empty if no chi is possible.
+ */
+export function chiOptions(state: GameState, seat: Seat): TileId[] {
+  if (state.phase !== "awaiting-draw") return [];
+  if (!state.lastDiscard) return [];
+  // Only next seat can chi.
+  if ((state.lastDiscard.from + 1) % 4 !== seat) return [];
+  if (state.players[seat]!.riichiDeclared) return [];
+  const tile = state.lastDiscard.tile;
+  if (isHonor(tile)) return [];
+  const num = numberOf(tile);
+  const counts = toCounts(state.players[seat]!.hand);
+  const options: TileId[] = [];
+  // Three possible runs containing `tile`: (tile-2, tile-1, tile),
+  // (tile-1, tile, tile+1), (tile, tile+1, tile+2).
+  // We need at least one of each "other" tile in hand.
+  if (num >= 3 && (counts[tile - 2] ?? 0) > 0 && (counts[tile - 1] ?? 0) > 0) {
+    options.push((tile - 2) as TileId);
+  }
+  if (num >= 2 && num <= 8 && (counts[tile - 1] ?? 0) > 0 && (counts[tile + 1] ?? 0) > 0) {
+    options.push((tile - 1) as TileId);
+  }
+  if (num <= 7 && (counts[tile + 1] ?? 0) > 0 && (counts[tile + 2] ?? 0) > 0) {
+    options.push(tile as TileId);
+  }
+  return options;
+}
+
+/**
+ * Commit a pon call by `caller`. The caller claims the last-discarded tile
+ * to form an open triplet, removes 2 matching tiles from their hand, and
+ * becomes the active player on their discard step (no draw — the called
+ * tile *is* the 14th).
+ */
+export function callPon(state: GameState, caller: Seat): GameState | null {
+  if (!canPon(state, caller)) return null;
+  const tile = state.lastDiscard!.tile;
+  const from = state.lastDiscard!.from;
+
+  const next = clone(state);
+  // Remove 2 matching tiles from hand.
+  let removed = 0;
+  next.players[caller]!.hand = next.players[caller]!.hand.filter((t) => {
+    if (removed < 2 && t === tile) {
+      removed++;
+      return false;
+    }
+    return true;
+  });
+  next.players[caller]!.melds.push({
+    type: "pon",
+    baseTile: tile,
+    called: tile,
+    from,
+  });
+  // The called tile is removed from the discarder's discard pile, since
+  // it's been claimed and now belongs to the caller's open meld.
+  const discardPile = next.players[from]!.discards;
+  if (discardPile.length > 0 && discardPile[discardPile.length - 1] === tile) {
+    discardPile.pop();
+  }
+  next.lastDiscard = null;
+  // Calls break ippatsu for the riichi-declarer (if any).
+  for (let s = 0; s < 4; s++) next.players[s]!.ippatsuActive = false;
+  next.active = caller;
+  next.phase = "awaiting-discard";
+  next.lastDrawn = null;
+  return next;
+}
+
+/**
+ * Commit a chi call by `caller`. `baseTile` is the lowest tile of the run
+ * (one of `chiOptions(state, caller)`). The called tile is whichever of the
+ * 3-run it is (already in lastDiscard).
+ */
+export function callChi(state: GameState, caller: Seat, baseTile: TileId): GameState | null {
+  const opts = chiOptions(state, caller);
+  if (!opts.includes(baseTile)) return null;
+  const calledTile = state.lastDiscard!.tile;
+  const from = state.lastDiscard!.from;
+
+  const next = clone(state);
+  // Remove the 2 other tiles in the run from the caller's hand.
+  const need = [baseTile, (baseTile + 1) as TileId, (baseTile + 2) as TileId].filter(
+    (t) => t !== calledTile,
+  );
+  for (const t of need) {
+    const idx = next.players[caller]!.hand.indexOf(t);
+    if (idx === -1) return null;
+    next.players[caller]!.hand.splice(idx, 1);
+  }
+  next.players[caller]!.melds.push({
+    type: "chi",
+    baseTile,
+    called: calledTile,
+    from,
+  });
+  const discardPile = next.players[from]!.discards;
+  if (discardPile.length > 0 && discardPile[discardPile.length - 1] === calledTile) {
+    discardPile.pop();
+  }
+  next.lastDiscard = null;
+  for (let s = 0; s < 4; s++) next.players[s]!.ippatsuActive = false;
+  next.active = caller;
+  next.phase = "awaiting-discard";
+  next.lastDrawn = null;
+  return next;
+}
+
+/**
+ * Bot-AI pon decision. Bots only pon yakuhai (a guaranteed 1-han yaku that
+ * makes the open hand viable to win on). They never chi (positional and
+ * usually weakens beginner-level play).
+ */
+function maybeBotPon(state: GameState): GameState | null {
+  if (!state.lastDiscard) return null;
+  const from = state.lastDiscard.from;
+  const tile = state.lastDiscard.tile;
+  if (!isHonor(tile)) return null; // only yakuhai-eligible (dragons + winds)
+  // For winds: only call if it's the bot's round or seat wind.
+  for (let off = 1; off <= 3; off++) {
+    const seat = ((from + off) % 4) as Seat;
+    if (seat === HUMAN_SEAT) continue;
+    if (!canPon(state, seat)) continue;
+    if (isDragon(tile)) {
+      const result = callPon(state, seat);
+      if (result) return result;
+    } else if (isWind(tile)) {
+      const w = (tile - 27) as Wind;
+      const seatW = ((seat - state.dealer + 4) % 4) as Wind;
+      if (w === state.roundWind || w === seatW) {
+        const result = callPon(state, seat);
+        if (result) return result;
+      }
+    }
+  }
+  return null;
 }
 
 /**
@@ -545,11 +751,13 @@ export function canDeclareRiichi(state: GameState): boolean {
   const player = state.players[HUMAN_SEAT]!;
   if (player.riichiDeclared) return false;
   if (state.scores[HUMAN_SEAT]! < RIICHI_BET) return false;
+  // Riichi requires a fully closed hand.
+  if (player.melds.length > 0) return false;
   // Tenpai check: at least one discard leaves a tenpai shape.
   for (let i = 0; i < player.hand.length; i++) {
     const remaining = [...player.hand];
     remaining.splice(i, 1);
-    if (isTenpai(remaining)) return true;
+    if (isTenpai(remaining, player.melds.length)) return true;
   }
   return false;
 }
@@ -558,8 +766,9 @@ export function canDeclareTsumo(state: GameState): boolean {
   if (state.phase !== "awaiting-discard") return false;
   if (state.active !== HUMAN_SEAT) return false;
   const player = state.players[HUMAN_SEAT]!;
-  if (player.hand.length !== 14) return false;
-  if (!evaluateHand(player.hand)) return false;
+  const expectedHand = 14 - 3 * player.melds.length;
+  if (player.hand.length !== expectedHand) return false;
+  if (!evaluateHand(player.hand, player.melds.length)) return false;
   // Must have at least one yaku.
   const ctx = {
     riichi: player.riichiDeclared,
@@ -568,33 +777,31 @@ export function canDeclareTsumo(state: GameState): boolean {
     roundWind: state.roundWind,
     seatWind: seatWind(HUMAN_SEAT, state.dealer),
     doraTiles: doraTiles(state),
-    concealed: true,
+    concealed: player.melds.length === 0,
   };
-  const yaku = detectYaku(player.hand, state.lastDrawn!, ctx);
+  const yaku = detectYaku(player.hand, state.lastDrawn!, player.melds, ctx);
   return !!yaku && yaku.yaku.length > 0;
 }
 
 /**
- * Returns the set of tile ids that, if added to the human's current 13-tile
- * hand, would complete a winning shape. Empty if the human isn't tenpai
- * (or it's their discard turn and they're holding 14 tiles).
+ * Returns the set of tile ids that, if added to the human's current
+ * concealed hand, would complete a winning shape. Empty if not tenpai.
  *
- * Caveat: this only checks SHAPE completion. Some "winning" tiles may yield
- * a yaku-less hand that can't actually be declared on ron; we don't filter
- * those out here because the cost is low and the UI is informational.
+ * Caveat: only checks SHAPE completion — doesn't filter out yaku-less wins.
  */
 export function humanWaits(state: GameState): TileId[] {
-  const hand = state.players[HUMAN_SEAT]!.hand;
-  // Use the 13-tile representation. If it's the human's discard turn (14
-  // tiles), check waits over each possible discard and union them; otherwise
-  // use the hand directly.
-  if (hand.length === 13) return computeWaits(hand);
-  if (hand.length === 14) {
+  const player = state.players[HUMAN_SEAT]!;
+  const hand = player.hand;
+  const meldCount = player.melds.length;
+  const tenpaiSize = 13 - 3 * meldCount;
+  const discardSize = 14 - 3 * meldCount;
+  if (hand.length === tenpaiSize) return computeWaits(hand, meldCount);
+  if (hand.length === discardSize) {
     const all = new Set<TileId>();
     for (let i = 0; i < hand.length; i++) {
       const remaining = [...hand];
       remaining.splice(i, 1);
-      for (const w of computeWaits(remaining)) all.add(w);
+      for (const w of computeWaits(remaining, meldCount)) all.add(w);
     }
     return [...all].sort((a, b) => a - b);
   }
@@ -602,21 +809,21 @@ export function humanWaits(state: GameState): TileId[] {
 }
 
 /**
- * For a 14-tile human hand on their discard step, return the set of hand
- * indices that, when discarded, leave a tenpai shape. Used to highlight
- * legal discards during riichi declaration so the user doesn't trial-and-
- * error their way through.
+ * For the human's discard step, return the set of hand indices that, when
+ * discarded, leave a tenpai shape. Used to highlight legal discards in
+ * riichi-arming mode.
  */
 export function legalRiichiDiscardIndices(state: GameState): number[] {
   if (state.phase !== "awaiting-discard") return [];
   if (state.active !== HUMAN_SEAT) return [];
-  const hand = state.players[HUMAN_SEAT]!.hand;
-  if (hand.length !== 14) return [];
+  const player = state.players[HUMAN_SEAT]!;
+  const expected = 14 - 3 * player.melds.length;
+  if (player.hand.length !== expected) return [];
   const out: number[] = [];
-  for (let i = 0; i < hand.length; i++) {
-    const remaining = [...hand];
+  for (let i = 0; i < player.hand.length; i++) {
+    const remaining = [...player.hand];
     remaining.splice(i, 1);
-    if (isTenpai(remaining)) out.push(i);
+    if (isTenpai(remaining, player.melds.length)) out.push(i);
   }
   return out;
 }
@@ -627,7 +834,7 @@ export function canDeclareRon(state: GameState): boolean {
   if (state.lastDiscard.from === HUMAN_SEAT) return false;
   const player = state.players[HUMAN_SEAT]!;
   const candidate = sortTiles([...player.hand, state.lastDiscard.tile]);
-  if (!evaluateHand(candidate)) return false;
+  if (!evaluateHand(candidate, player.melds.length)) return false;
   const ctx = {
     riichi: player.riichiDeclared,
     ippatsu: player.ippatsuActive,
@@ -635,8 +842,8 @@ export function canDeclareRon(state: GameState): boolean {
     roundWind: state.roundWind,
     seatWind: seatWind(HUMAN_SEAT, state.dealer),
     doraTiles: doraTiles(state),
-    concealed: true,
+    concealed: player.melds.length === 0,
   };
-  const yaku = detectYaku(candidate, state.lastDiscard.tile, ctx);
+  const yaku = detectYaku(candidate, state.lastDiscard.tile, player.melds, ctx);
   return !!yaku && yaku.yaku.length > 0;
 }

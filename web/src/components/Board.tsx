@@ -3,12 +3,17 @@ import { useGameSounds } from "@freegamestore/games";
 import {
   type GameState,
   HUMAN_SEAT,
+  type OpenMeld,
   type Seat,
   advance,
   botDiscard,
+  callChi,
+  callPon,
   canDeclareRiichi,
   canDeclareRon,
   canDeclareTsumo,
+  canPon,
+  chiOptions,
   commitRon,
   declareRiichi,
   declareTsumo,
@@ -31,6 +36,8 @@ type Action =
   | { type: "riichi"; handIndex: number }
   | { type: "tsumo" }
   | { type: "ron" }
+  | { type: "pon" }
+  | { type: "chi"; baseTile: number }
   | { type: "bot-step" }
   | { type: "advance" };
 
@@ -54,6 +61,14 @@ function reducer(state: GameState, action: Action): GameState {
     }
     case "ron": {
       const next = commitRon(state);
+      return next ?? state;
+    }
+    case "pon": {
+      const next = callPon(state, HUMAN_SEAT);
+      return next ?? state;
+    }
+    case "chi": {
+      const next = callChi(state, HUMAN_SEAT, action.baseTile);
       return next ?? state;
     }
     case "bot-step":
@@ -83,15 +98,18 @@ export function Board() {
     return () => clearTimeout(t);
   }, [state.active, state.phase]);
 
-  // After any discard the state sits in `awaiting-draw`. If the human can ron
-  // off that tile, hold the window open so they can decide. Otherwise advance.
+  // After any discard the state sits in `awaiting-draw`. If the human can
+  // call (ron / pon / chi), hold the window open. Otherwise advance.
   const ronAvailable = canDeclareRon(state);
+  const ponAvailable = canPon(state, HUMAN_SEAT);
+  const chiAvailable = chiOptions(state, HUMAN_SEAT).length > 0;
+  const humanCanCall = ronAvailable || ponAvailable || chiAvailable;
   useEffect(() => {
     if (state.phase !== "awaiting-draw") return;
-    if (ronAvailable) return; // wait for human input
+    if (humanCanCall) return;
     const t = setTimeout(() => dispatch({ type: "advance" }), 250);
     return () => clearTimeout(t);
-  }, [state.phase, state.turn, ronAvailable]);
+  }, [state.phase, state.turn, humanCanCall]);
 
   // Reset riichi-arming mode whenever it stops being valid (e.g. the turn
   // cycled, the human already declared, or no longer tenpai).
@@ -166,6 +184,9 @@ export function Board() {
   const human = state.players[HUMAN_SEAT];
   const canTsumo = canDeclareTsumo(state);
   const canRon = canDeclareRon(state);
+  const canHumanPon = canPon(state, HUMAN_SEAT);
+  const humanChiOpts = chiOptions(state, HUMAN_SEAT);
+  const hasCallWindow = canRon || canHumanPon || humanChiOpts.length > 0;
   const wallLeft = tilesRemaining(state.wall);
   const doraTile = state.wall.doraIndicators[0]
     ? indicatorToDora(state.wall.doraIndicators[0])
@@ -294,6 +315,14 @@ export function Board() {
               />
             );
           })}
+          {/* Open melds appended to the right of the concealed hand */}
+          {human.melds.length > 0 && (
+            <div className="flex gap-2 ml-2">
+              {human.melds.map((m, i) => (
+                <MeldDisplay key={i} meld={m} size="md" />
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="flex items-center gap-2 px-3 py-2 pointer-events-auto flex-wrap justify-center">
@@ -308,14 +337,28 @@ export function Board() {
             </Button>
           )}
           {canRon && (
-            <>
-              <Button onClick={onRon} variant="success">
-                Ron
-              </Button>
-              <Button onClick={onPass} variant="danger">
-                Pass
-              </Button>
-            </>
+            <Button onClick={onRon} variant="success">
+              Ron
+            </Button>
+          )}
+          {canHumanPon && (
+            <Button onClick={() => dispatch({ type: "pon" })} variant="primary">
+              Pon
+            </Button>
+          )}
+          {humanChiOpts.map((bt) => (
+            <Button
+              key={`chi-${bt}`}
+              onClick={() => dispatch({ type: "chi", baseTile: bt })}
+              variant="primary"
+            >
+              Chi
+            </Button>
+          ))}
+          {hasCallWindow && (
+            <Button onClick={onPass} variant="danger">
+              Pass
+            </Button>
           )}
           <div className="text-xs text-white/80 px-2 flex items-center gap-2">
             {isHumanTurn && (
@@ -343,6 +386,25 @@ export function Board() {
       {state.roundComplete && (
         <RoundCompleteModal state={state} onNewRound={onNewRound} />
       )}
+    </div>
+  );
+}
+
+// ── Meld display ──
+
+function MeldDisplay({ meld, size }: { meld: OpenMeld; size: "sm" | "md" }) {
+  const tiles =
+    meld.type === "pon"
+      ? [meld.baseTile, meld.baseTile, meld.baseTile]
+      : [meld.baseTile, meld.baseTile + 1, meld.baseTile + 2];
+  return (
+    <div
+      className="flex gap-0.5 items-end"
+      title={`${meld.type === "pon" ? "Pon" : "Chi"} called from ${meld.from === 0 ? "you" : `seat ${meld.from}`}`}
+    >
+      {tiles.map((t, i) => (
+        <Tile key={i} tile={t as TileId} size={size} />
+      ))}
     </div>
   );
 }
@@ -435,6 +497,13 @@ function OpponentRow({
           <TileBack key={i} size="sm" rotation={tileRotation} />
         ))}
       </div>
+      {player.melds.length > 0 && (
+        <div className={`${tileLayout} gap-1`} style={{ opacity: 0.95 }}>
+          {player.melds.map((m, i) => (
+            <MeldDisplay key={i} meld={m} size="sm" />
+          ))}
+        </div>
+      )}
       <div
         className="text-xs px-2 py-1 rounded"
         style={{
