@@ -1,0 +1,13 @@
+{
+  "name": "riichi",
+  "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "engines": { "node": ">=22" },
+  "pnpm": { "onlyBuiltDependencies": ["esbuild"] },
+  "scripts": {
+    "dev": "pnpm --filter @riichi/web dev",
+    "build": "pnpm --filter @riichi/web build",
+    "preview": "pnpm --filter @riichi/web preview",
+    "typecheck": "pnpm --filter @riichi/web exec tsc -b"
+  }
+}
