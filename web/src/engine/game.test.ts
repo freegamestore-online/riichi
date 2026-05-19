@@ -3,11 +3,14 @@ import {
   advance,
   botDiscard,
   commitRon,
+  declareTsumoFor,
   discard,
   newGame,
+  nextHand,
   HUMAN_SEAT,
   humanWaits,
   legalRiichiDiscardIndices,
+  type Seat,
 } from "./game";
 import { parseHand } from "./tiles";
 
@@ -82,6 +85,65 @@ describe("ippatsu window", () => {
     // we directly assert ippatsuActive defaults to false and is independent
     // of the prior turn-arithmetic bug.
     expect(s.players[0].ippatsuActive).toBe(false);
+  });
+});
+
+describe("multi-hand round", () => {
+  it("nextHand returns null while a hand is still in progress", () => {
+    const s = newGame();
+    expect(nextHand(s)).toBeNull();
+  });
+
+  it("nextHand rotates dealer when a non-dealer wins via tsumo", () => {
+    // Set up a winning hand for seat 1 (a bot, non-dealer).
+    const s = newGame();
+    s.players[1].hand = parseHand("123456m789p123s55s");
+    s.active = 1;
+    s.phase = "awaiting-discard";
+    s.lastDrawn = s.players[1].hand[13] ?? null;
+    const ended = declareTsumoFor(s, 1);
+    expect(ended).not.toBeNull();
+    if (!ended) return;
+    expect(ended.phase).toBe("ended");
+    expect(ended.result?.winner).toBe(1);
+    const next = nextHand(ended);
+    expect(next).not.toBeNull();
+    if (!next) return;
+    // Non-dealer (seat 1) won → dealer advances to seat 1.
+    expect(next.dealer).toBe(1);
+    expect(next.handNumber).toBe(2);
+    expect(next.honba).toBe(0);
+  });
+
+  it("nextHand keeps dealer + bumps honba on dealer win", () => {
+    const s = newGame();
+    // Seat 0 (dealer) wins via tsumo.
+    s.players[0].hand = parseHand("123456m789p123s55s");
+    s.lastDrawn = s.players[0].hand[13] ?? null;
+    const ended = declareTsumoFor(s, 0);
+    expect(ended).not.toBeNull();
+    if (!ended) return;
+    const next = nextHand(ended);
+    expect(next).not.toBeNull();
+    if (!next) return;
+    expect(next.dealer).toBe(0);
+    expect(next.handNumber).toBe(1); // renchan keeps the kyoku number
+    expect(next.honba).toBe(1);
+  });
+
+  it("marks round complete once we'd advance past East 4", () => {
+    const s = newGame();
+    s.handNumber = 4;
+    s.dealer = 3 as Seat;
+    s.players[1].hand = parseHand("123456m789p123s55s");
+    s.active = 1;
+    s.phase = "awaiting-discard";
+    s.lastDrawn = s.players[1].hand[13] ?? null;
+    const ended = declareTsumoFor(s, 1);
+    if (!ended) return;
+    const next = nextHand(ended);
+    expect(next).not.toBeNull();
+    expect(next?.roundComplete).toBe(true);
   });
 });
 

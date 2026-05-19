@@ -16,6 +16,7 @@ import {
   humanWaits,
   legalRiichiDiscardIndices,
   newGame,
+  nextHand,
 } from "../engine/game";
 import { glyph, type TileId } from "../engine/tiles";
 import { indicatorToDora, tilesRemaining } from "../engine/wall";
@@ -25,6 +26,7 @@ const SEAT_WIND: Record<Seat, string> = { 0: "E", 1: "S", 2: "W", 3: "N" };
 
 type Action =
   | { type: "new-game" }
+  | { type: "next-hand" }
   | { type: "discard"; handIndex: number }
   | { type: "riichi"; handIndex: number }
   | { type: "tsumo" }
@@ -36,6 +38,10 @@ function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
     case "new-game":
       return newGame();
+    case "next-hand": {
+      const next = nextHand(state);
+      return next ?? state;
+    }
     case "discard":
       return discard(state, action.handIndex);
     case "riichi": {
@@ -144,7 +150,15 @@ export function Board() {
     soundsRef.current.playTick();
     setRiichiMode((m) => !m);
   };
-  const onNewHand = () => {
+  const onNextHand = () => {
+    setRiichiMode(false);
+    if (state.roundComplete) {
+      dispatch({ type: "new-game" });
+    } else {
+      dispatch({ type: "next-hand" });
+    }
+  };
+  const onNewRound = () => {
     setRiichiMode(false);
     dispatch({ type: "new-game" });
   };
@@ -200,10 +214,26 @@ export function Board() {
               }}
             >
               <div style={{ fontSize: 11, opacity: 0.7, letterSpacing: "0.08em" }}>
-                ROUND {SEAT_WIND[state.roundWind]} · TURN {state.turn}
+                {SEAT_WIND[state.roundWind]}-{state.handNumber} · TURN {state.turn}
               </div>
               <div style={{ fontSize: 22, fontWeight: 700 }}>{wallLeft}</div>
               <div style={{ fontSize: 10, opacity: 0.6 }}>tiles left</div>
+              {(state.honba > 0 || state.riichiSticks > 0) && (
+                <div className="flex items-center gap-3 mt-1" style={{ fontSize: 10 }}>
+                  {state.honba > 0 && (
+                    <span>
+                      <span style={{ opacity: 0.6 }}>HONBA</span>{" "}
+                      <strong>{state.honba}</strong>
+                    </span>
+                  )}
+                  {state.riichiSticks > 0 && (
+                    <span>
+                      <span style={{ opacity: 0.6 }}>STICKS</span>{" "}
+                      <strong>{state.riichiSticks}</strong>
+                    </span>
+                  )}
+                </div>
+              )}
               {doraTile !== null && (
                 <div className="flex items-center gap-2 mt-1">
                   <span style={{ fontSize: 10, opacity: 0.7 }}>DORA</span>
@@ -306,8 +336,12 @@ export function Board() {
         </div>
       </div>
 
-      {state.phase === "ended" && state.result && (
-        <ResultModal result={state.result} state={state} onNewHand={onNewHand} />
+      {state.phase === "ended" && state.result && !state.roundComplete && (
+        <ResultModal result={state.result} state={state} onNextHand={onNextHand} />
+      )}
+
+      {state.roundComplete && (
+        <RoundCompleteModal state={state} onNewRound={onNewRound} />
       )}
     </div>
   );
@@ -491,12 +525,22 @@ function Button({
 function ResultModal({
   result,
   state,
-  onNewHand,
+  onNextHand,
 }: {
   result: NonNullable<GameState["result"]>;
   state: GameState;
-  onNewHand: () => void;
+  onNextHand: () => void;
 }) {
+  // What does the *next* button do?
+  const willCompleteRound = (() => {
+    const dealerKept =
+      result.kind === "draw"
+        ? true
+        : result.winner === state.dealer;
+    const nextHandNum = dealerKept ? state.handNumber : state.handNumber + 1;
+    return nextHandNum > 4;
+  })();
+
   return (
     <div
       className="absolute inset-0 flex items-center justify-center"
@@ -506,16 +550,17 @@ function ResultModal({
         className="rounded-2xl p-6 max-w-sm w-[90%] text-center"
         style={{ background: "var(--paper)", color: "var(--ink)" }}
       >
-        <h2
-          className="text-2xl font-bold mb-2"
-          style={{ fontFamily: "Fraunces, serif" }}
-        >
+        <h2 className="text-2xl font-bold mb-2" style={{ fontFamily: "Fraunces, serif" }}>
           {result.kind === "tsumo"
             ? "Tsumo!"
             : result.kind === "ron"
               ? "Ron!"
               : "Exhaustive draw"}
         </h2>
+        <p className="text-xs mb-2" style={{ color: "var(--muted)" }}>
+          {SEAT_WIND[state.roundWind]}-{state.handNumber}
+          {state.honba > 0 && ` · honba ${state.honba}`}
+        </p>
         {result.kind !== "draw" && (
           <>
             <p className="text-sm" style={{ color: "var(--muted)" }}>
@@ -533,7 +578,7 @@ function ResultModal({
                 {result.yakuNames?.map((y) => <li key={y}>{y}</li>)}
               </ul>
               <p className="font-bold mt-2">
-                {result.han} han · {result.fu} fu · {result.totalPoints} pts
+                {result.han} han · {result.fu} fu · {result.totalPoints?.toLocaleString()} pts
               </p>
             </div>
           </>
@@ -541,17 +586,77 @@ function ResultModal({
         <div className="mt-4 text-xs grid grid-cols-2 gap-1" style={{ color: "var(--muted)" }}>
           {([0, 1, 2, 3] as Seat[]).map((s) => (
             <div key={s}>
-              {SEAT_LABELS[s]}: <strong>{state.scores[s]}</strong>
+              {SEAT_LABELS[s]}: <strong>{state.scores[s].toLocaleString()}</strong>
             </div>
           ))}
         </div>
         <button
           type="button"
-          onClick={onNewHand}
+          onClick={onNextHand}
           className="mt-5 px-5 py-3 rounded-xl font-bold"
           style={{ background: "var(--accent)", color: "#fff", minHeight: "2.75rem" }}
         >
-          New hand
+          {willCompleteRound ? "Finish round →" : "Next hand →"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Round-complete modal ──
+
+function RoundCompleteModal({
+  state,
+  onNewRound,
+}: {
+  state: GameState;
+  onNewRound: () => void;
+}) {
+  const ranked = ([0, 1, 2, 3] as Seat[])
+    .map((s) => ({ seat: s, score: state.scores[s] }))
+    .sort((a, b) => b.score - a.score);
+  const medals = ["🥇", "🥈", "🥉", "  "];
+
+  return (
+    <div
+      className="absolute inset-0 flex items-center justify-center"
+      style={{ background: "rgba(0,0,0,0.75)", zIndex: 20 }}
+    >
+      <div
+        className="rounded-2xl p-6 max-w-sm w-[90%] text-center"
+        style={{ background: "var(--paper)", color: "var(--ink)" }}
+      >
+        <h2 className="text-3xl font-bold mb-1" style={{ fontFamily: "Fraunces, serif" }}>
+          East round complete
+        </h2>
+        <p className="text-xs mb-4" style={{ color: "var(--muted)" }}>
+          4 hands played
+        </p>
+        <div className="flex flex-col gap-2 my-3">
+          {ranked.map((row, i) => (
+            <div
+              key={row.seat}
+              className="flex items-center justify-between px-4 py-2 rounded-lg"
+              style={{
+                background: row.seat === HUMAN_SEAT ? "var(--accent)" : "var(--panel)",
+                color: row.seat === HUMAN_SEAT ? "#fff" : "var(--ink)",
+                fontWeight: row.seat === HUMAN_SEAT ? 700 : 500,
+              }}
+            >
+              <span>
+                {medals[i]} {SEAT_LABELS[row.seat]}
+              </span>
+              <strong>{row.score.toLocaleString()}</strong>
+            </div>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={onNewRound}
+          className="mt-3 px-5 py-3 rounded-xl font-bold"
+          style={{ background: "var(--accent)", color: "#fff", minHeight: "2.75rem" }}
+        >
+          Start new round
         </button>
       </div>
     </div>

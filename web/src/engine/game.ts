@@ -46,16 +46,24 @@ export interface RoundResult {
 
 export interface GameState {
   players: [PlayerState, PlayerState, PlayerState, PlayerState];
-  scores: [number, number, number, number]; // running point totals
+  scores: [number, number, number, number]; // running point totals across hands
   wall: Wall;
   active: Seat;
   dealer: Seat;
   roundWind: Wind;
   phase: Phase;
-  turn: number; // total turns elapsed (each draw = +1)
+  turn: number; // total turns elapsed in this hand (each draw = +1)
   lastDrawn: TileId | null; // tile just drawn by active player
   lastDiscard: { tile: TileId; from: Seat } | null;
   result: RoundResult | null;
+  /** 1-based East hand number (1..4). */
+  handNumber: number;
+  /** Honba (bonus-round) counter. Resets to 0 on non-renchan hand transitions. */
+  honba: number;
+  /** Riichi sticks waiting on the table for the next winner. */
+  riichiSticks: number;
+  /** True once the East round is fully complete (East 4 ended with no renchan). */
+  roundComplete: boolean;
 }
 
 export const HUMAN_SEAT: Seat = 0;
@@ -86,8 +94,71 @@ export function newGame(): GameState {
     lastDrawn: null,
     lastDiscard: null,
     result: null,
+    handNumber: 1,
+    honba: 0,
+    riichiSticks: 0,
+    roundComplete: false,
   };
   return draw(state);
+}
+
+/**
+ * Start the next hand of the current round. Returns null if the round is
+ * already complete or the current hand hasn't ended yet.
+ *
+ *   - Non-renchan (non-dealer wins): dealer advances, handNumber +1, honba 0.
+ *   - Renchan (dealer wins, or exhaustive draw with dealer tenpai — for v0.2
+ *     we treat *any* draw as a renchan to keep it simple): dealer stays,
+ *     handNumber unchanged, honba +1.
+ *   - When handNumber would exceed 4, the round is marked complete instead.
+ */
+export function nextHand(state: GameState): GameState | null {
+  if (state.phase !== "ended") return null;
+  if (state.roundComplete) return null;
+
+  const r = state.result;
+  const dealerKept =
+    r?.kind === "draw"
+      ? true
+      : r?.kind === "tsumo" || r?.kind === "ron"
+        ? r.winner === state.dealer
+        : true;
+
+  const newHandNumber = dealerKept ? state.handNumber : state.handNumber + 1;
+  const newHonba = dealerKept ? state.honba + 1 : 0;
+  const newDealer = dealerKept ? state.dealer : (((state.dealer + 1) % 4) as Seat);
+
+  if (newHandNumber > 4) {
+    return { ...state, roundComplete: true };
+  }
+
+  const deal = dealHand();
+  const players: PlayerState[] = deal.hands.map((h) => ({
+    hand: sortTiles(h),
+    discards: [],
+    riichiDeclared: false,
+    riichiTurn: null,
+    ippatsuActive: false,
+  }));
+
+  const next: GameState = {
+    players: players as GameState["players"],
+    scores: [...state.scores] as GameState["scores"],
+    wall: deal.wall,
+    active: newDealer,
+    dealer: newDealer,
+    roundWind: state.roundWind,
+    phase: "awaiting-draw",
+    turn: 0,
+    lastDrawn: null,
+    lastDiscard: null,
+    result: null,
+    handNumber: newHandNumber,
+    honba: newHonba,
+    riichiSticks: state.riichiSticks, // carry; winner collects on win
+    roundComplete: false,
+  };
+  return draw(next);
 }
 
 // ── Pure transitions ──
@@ -113,6 +184,10 @@ function clone(state: GameState): GameState {
     lastDrawn: state.lastDrawn,
     lastDiscard: state.lastDiscard,
     result: state.result,
+    handNumber: state.handNumber,
+    honba: state.honba,
+    riichiSticks: state.riichiSticks,
+    roundComplete: state.roundComplete,
   };
 }
 
@@ -174,7 +249,11 @@ export function discard(state: GameState, handIndex: number): GameState {
   }
   next.active = nextSeat(seat);
   next.phase = "awaiting-draw";
-  return next;
+
+  // Give bots a chance to ron this discard. The human's ron is driven from
+  // the UI so the player can choose, so we only auto-commit bot rons here.
+  const bottedOut = maybeBotRon(next);
+  return bottedOut ?? next;
 }
 
 /**
@@ -209,6 +288,7 @@ export function declareRiichi(state: GameState, handIndex: number): GameState | 
   next.players[seat]!.riichiDeclared = true;
   next.players[seat]!.riichiTurn = state.turn;
   next.scores[seat] -= RIICHI_BET;
+  next.riichiSticks += 1; // 1000pt stick goes onto the table
   // The discard is part of the riichi declaration.
   const afterDiscard = discard(next, handIndex);
   // Open the ippatsu window — set AFTER the discard so the discard's own
@@ -217,10 +297,10 @@ export function declareRiichi(state: GameState, handIndex: number): GameState | 
   return afterDiscard;
 }
 
-/** Try to declare tsumo on the just-drawn tile. */
-export function declareTsumo(state: GameState): GameState | null {
+/** Try to declare tsumo on the just-drawn tile (any seat). */
+export function declareTsumoFor(state: GameState, seat: Seat): GameState | null {
   if (state.phase !== "awaiting-discard") return null;
-  const seat = state.active;
+  if (state.active !== seat) return null;
   const player = state.players[seat]!;
   if (player.hand.length !== 14) return null;
 
@@ -249,6 +329,21 @@ export function declareTsumo(state: GameState): GameState | null {
 
   const next = clone(state);
   applyTsumoTransfers(next, seat, score);
+  // Honba: each non-winner pays an extra 100pt per honba stick.
+  const honbaPerPayer = state.honba * 100;
+  let honbaTotal = 0;
+  for (let s = 0; s < 4; s++) {
+    if (s !== seat) {
+      next.scores[s] = next.scores[s]! - honbaPerPayer;
+      next.scores[seat] += honbaPerPayer;
+      honbaTotal += honbaPerPayer;
+    }
+  }
+  // Riichi sticks: winner collects everything on the table.
+  const sticksBonus = next.riichiSticks * 1000;
+  next.scores[seat] += sticksBonus;
+  next.riichiSticks = 0;
+
   next.phase = "ended";
   next.result = {
     kind: "tsumo",
@@ -256,21 +351,24 @@ export function declareTsumo(state: GameState): GameState | null {
     yakuNames: score.yakuNames,
     han: score.han,
     fu: score.fu,
-    totalPoints: score.totalPoints,
+    totalPoints: score.totalPoints + honbaTotal + sticksBonus,
     cap: score.cap,
   };
   return next;
 }
 
-/**
- * Commit a ron declaration: the human calls ron on the last bot discard.
- */
-export function commitRon(state: GameState): GameState | null {
+/** Human helper (kept for back-compat with the UI). */
+export function declareTsumo(state: GameState): GameState | null {
+  return declareTsumoFor(state, HUMAN_SEAT);
+}
+
+/** Commit a ron declaration for the given seat against the last discard. */
+export function commitRonFor(state: GameState, ronner: Seat): GameState | null {
   if (!state.lastDiscard) return null;
   const { tile, from } = state.lastDiscard;
-  if (from === HUMAN_SEAT) return null;
+  if (from === ronner) return null;
 
-  const player = state.players[HUMAN_SEAT]!;
+  const player = state.players[ronner]!;
   const winningHand = sortTiles([...player.hand, tile]);
   if (winningHand.length !== 14) return null;
   const shape = evaluateHand(winningHand);
@@ -281,7 +379,7 @@ export function commitRon(state: GameState): GameState | null {
     ippatsu: player.ippatsuActive,
     tsumo: false,
     roundWind: state.roundWind,
-    seatWind: seatWind(HUMAN_SEAT, state.dealer),
+    seatWind: seatWind(ronner, state.dealer),
     doraTiles: doraTiles(state),
     concealed: true,
   };
@@ -291,33 +389,79 @@ export function commitRon(state: GameState): GameState | null {
   const score = scoreHand({
     shape,
     yakuResult: yaku,
-    isDealer: HUMAN_SEAT === state.dealer,
+    isDealer: ronner === state.dealer,
     isTsumo: false,
   });
 
   const next = clone(state);
-  next.scores[HUMAN_SEAT] += score.totalPoints;
+  next.scores[ronner] += score.totalPoints;
   next.scores[from] -= score.totalPoints;
+  // Honba: loser pays an extra 300 per honba stick (entire honba bonus to winner).
+  const honbaBonus = state.honba * 300;
+  next.scores[ronner] += honbaBonus;
+  next.scores[from] -= honbaBonus;
+  // Riichi sticks
+  const sticksBonus = next.riichiSticks * 1000;
+  next.scores[ronner] += sticksBonus;
+  next.riichiSticks = 0;
+
   next.phase = "ended";
   next.result = {
     kind: "ron",
-    winner: HUMAN_SEAT,
+    winner: ronner,
     loser: from,
     yakuNames: score.yakuNames,
     han: score.han,
     fu: score.fu,
-    totalPoints: score.totalPoints,
+    totalPoints: score.totalPoints + honbaBonus + sticksBonus,
     cap: score.cap,
   };
   return next;
 }
 
-/** Bot turn: random discard. The bot was already dealt a 14th tile by `draw()`. */
+/** Human helper (kept for back-compat with the UI). */
+export function commitRon(state: GameState): GameState | null {
+  return commitRonFor(state, HUMAN_SEAT);
+}
+
+/**
+ * Resolve ron priority after a discard. Ron priority follows turn order
+ * starting from the discarder's left (next seat to act). Bots auto-call when
+ * they can; the human's call is driven from the UI, so we *stop* scanning
+ * when we hit the human with a winning hand — otherwise a lower-priority
+ * bot would steal the win the human would otherwise take.
+ */
+function maybeBotRon(state: GameState): GameState | null {
+  if (!state.lastDiscard) return null;
+  const from = state.lastDiscard.from;
+  for (let off = 1; off <= 3; off++) {
+    const seat = ((from + off) % 4) as Seat;
+    if (seat === HUMAN_SEAT) {
+      if (canDeclareRon(state)) return null;
+      continue;
+    }
+    const result = commitRonFor(state, seat);
+    if (result) return result;
+  }
+  return null;
+}
+
+/**
+ * Bot turn: tsumo if winning, otherwise pick a discard. The bot was already
+ * dealt a 14th tile by `draw()`.
+ */
 export function botDiscard(state: GameState): GameState {
   if (state.phase !== "awaiting-discard") return state;
   if (state.active === HUMAN_SEAT) return state; // not a bot
   const hand = state.players[state.active]!.hand;
   if (hand.length === 0) return state;
+
+  // 1) Tsumo if the bot's hand is complete and yaku-bearing.
+  const tsumoed = declareTsumoFor(state, state.active);
+  if (tsumoed) return tsumoed;
+
+  // 2) Otherwise discard. `discard()` will auto-ron for any bot that can
+  //    claim the tile.
   const idx = pickBotDiscardIndex(hand);
   return discard(state, idx);
 }
