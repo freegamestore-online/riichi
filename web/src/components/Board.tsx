@@ -4,6 +4,7 @@ import {
   type GameState,
   HUMAN_SEAT,
   type Seat,
+  advance,
   botDiscard,
   canDeclareRiichi,
   canDeclareRon,
@@ -26,7 +27,8 @@ type Action =
   | { type: "riichi"; handIndex: number }
   | { type: "tsumo" }
   | { type: "ron" }
-  | { type: "bot-step" };
+  | { type: "bot-step" }
+  | { type: "advance" };
 
 function reducer(state: GameState, action: Action): GameState {
   switch (action.type) {
@@ -48,6 +50,8 @@ function reducer(state: GameState, action: Action): GameState {
     }
     case "bot-step":
       return botDiscard(state);
+    case "advance":
+      return advance(state);
   }
 }
 
@@ -60,17 +64,26 @@ export function Board() {
   soundsRef.current = sounds;
   const endedRef = useRef(false);
 
-  // Bot turns advance automatically.
+  // Bot discards on a timer when it's their turn.
   useEffect(() => {
-    if (state.phase === "ended") return;
-    if (state.active === HUMAN_SEAT) return;
     if (state.phase !== "awaiting-discard") return;
+    if (state.active === HUMAN_SEAT) return;
     const t = setTimeout(() => {
       soundsRef.current.playTick();
       dispatch({ type: "bot-step" });
     }, 700);
     return () => clearTimeout(t);
   }, [state.active, state.phase]);
+
+  // After any discard the state sits in `awaiting-draw`. If the human can ron
+  // off that tile, hold the window open so they can decide. Otherwise advance.
+  const ronAvailable = canDeclareRon(state);
+  useEffect(() => {
+    if (state.phase !== "awaiting-draw") return;
+    if (ronAvailable) return; // wait for human input
+    const t = setTimeout(() => dispatch({ type: "advance" }), 250);
+    return () => clearTimeout(t);
+  }, [state.phase, state.turn, ronAvailable]);
 
   // Fire end-of-hand sounds when the result resolves.
   useEffect(() => {
@@ -113,6 +126,10 @@ export function Board() {
   const onRon = () => {
     soundsRef.current.playTick();
     dispatch({ type: "ron" });
+  };
+  const onPass = () => {
+    soundsRef.current.playTick();
+    dispatch({ type: "advance" });
   };
   const onRiichi = () => {
     soundsRef.current.playTick();
@@ -185,9 +202,14 @@ export function Board() {
             </Button>
           )}
           {canRon && (
-            <Button onClick={onRon} variant="success">
-              Ron
-            </Button>
+            <>
+              <Button onClick={onRon} variant="success">
+                Ron
+              </Button>
+              <Button onClick={onPass} variant="danger">
+                Pass
+              </Button>
+            </>
           )}
           <div className="text-xs text-white/70 px-2">
             {state.players[HUMAN_SEAT].riichiDeclared && (

@@ -140,7 +140,12 @@ function draw(state: GameState): GameState {
 
 // ── Public actions ──
 
-/** Discard the tile at `handIndex` of the active player's hand. */
+/**
+ * Discard the tile at `handIndex`. Does NOT auto-draw the next player — the
+ * caller advances via `advance()` (or `commitRon()` if a ron is in range).
+ * Splitting this lets the UI sit in `"awaiting-draw"` long enough for the
+ * human to consider a call on a bot's discard.
+ */
 export function discard(state: GameState, handIndex: number): GameState {
   if (state.phase !== "awaiting-discard") return state;
   const seat = state.active;
@@ -156,7 +161,17 @@ export function discard(state: GameState, handIndex: number): GameState {
   next.lastDrawn = null;
   next.active = nextSeat(seat);
   next.phase = "awaiting-draw";
-  return draw(next);
+  return next;
+}
+
+/**
+ * Advance from `awaiting-draw` to the next player's draw. The caller is
+ * responsible for deciding whether to call ron first; if no call is being
+ * made, this is the universal "next turn" step.
+ */
+export function advance(state: GameState): GameState {
+  if (state.phase !== "awaiting-draw") return state;
+  return draw(state);
 }
 
 /**
@@ -230,48 +245,6 @@ export function declareTsumo(state: GameState): GameState | null {
   return next;
 }
 
-/** Try to ron on the last discard (only legal if it was someone else's). */
-export function declareRon(state: GameState, ronner: Seat): GameState | null {
-  if (state.phase !== "awaiting-draw") return null; // ron is called between discard and next draw — but we currently auto-draw, so adapt: allow ron when there is a pending lastDiscard
-  // In v0.2 we evaluate ron eagerly after each discard (before auto-draw).
-  // See checkForRon().
-  void ronner;
-  return null;
-}
-
-/**
- * Eagerly check whether any non-discarding seat (currently the human only)
- * can ron the latest discard. If so, finalise the hand. Returns either an
- * updated state (with result populated) or the original state.
- */
-export function checkForRon(state: GameState): GameState {
-  if (!state.lastDiscard) return state;
-  const { tile, from } = state.lastDiscard;
-  // For v0.2, only the human seat 0 calls ron.
-  if (from === HUMAN_SEAT) return state;
-
-  const player = state.players[HUMAN_SEAT]!;
-  const candidate = sortTiles([...player.hand, tile]);
-  if (candidate.length !== 14) return state;
-  if (!evaluateHand(candidate)) return state;
-
-  const ctx = {
-    riichi: player.riichiDeclared,
-    ippatsu: player.riichiDeclared && state.turn === (player.riichiTurn ?? -1) + 1,
-    tsumo: false,
-    roundWind: state.roundWind,
-    seatWind: seatWind(HUMAN_SEAT, state.dealer),
-    doraTiles: doraTiles(state),
-    concealed: true,
-  };
-  const yaku = detectYaku(candidate, tile, ctx);
-  if (!yaku || yaku.yaku.length === 0) return state;
-
-  // Hand has yaku — return a "ron is available" preview without committing.
-  // The UI calls commitRon() when the human chooses to call.
-  return state;
-}
-
 /**
  * Commit a ron declaration: the human calls ron on the last bot discard.
  */
@@ -322,18 +295,14 @@ export function commitRon(state: GameState): GameState | null {
   return next;
 }
 
-/** Bot turn: random discard. The bot has already drawn a tile (auto-draw). */
+/** Bot turn: random discard. The bot was already dealt a 14th tile by `draw()`. */
 export function botDiscard(state: GameState): GameState {
   if (state.phase !== "awaiting-discard") return state;
   if (state.active === HUMAN_SEAT) return state; // not a bot
   const hand = state.players[state.active]!.hand;
   if (hand.length === 0) return state;
-  // Random discard for v0.2. A small bias: prefer discarding honors/terminals
-  // we have only one of, to roughly approximate beginner play.
   const idx = pickBotDiscardIndex(hand);
-  let next = discard(state, idx);
-  next = checkForRon(next);
-  return next;
+  return discard(state, idx);
 }
 
 function pickBotDiscardIndex(hand: TileId[]): number {
