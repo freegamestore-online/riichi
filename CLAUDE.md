@@ -1,44 +1,22 @@
-# Grid Game Template
+# Riichi
 
-A free game on FreeGameStore.
+4-player Riichi Mahjong (Japanese rules) on FreeGameStore. v0.2 is single-player vs three random-discard bots; multiplayer over FGS rooms is planned for v0.3+.
 
 - Subdomain: `riichi.freegamestore.online`
 - Dev: `pnpm install && pnpm dev`
 - Build: `pnpm build`
+- Test: `pnpm --filter @riichi/web test`
 - Deploy: `git push origin main` (auto-deploys via Cloudflare Pages)
 
-Free, MIT-licensed, no tracking. For platform conventions, read
-https://raw.githubusercontent.com/freeappstore-online/freeappstore/main/SKILLS.md
+The game engine lives in `web/src/engine/` and is pure TypeScript (no React, no DOM):
+`tiles.ts` (34-type Unicode tile system + parser), `wall.ts` (deal + dora),
+`evaluator.ts` (4-melds-and-pair / chiitoitsu / kokushi decomposer), `yaku.ts`
+(yaku subset detector), `score.ts` (fu + han + transfers), `game.ts` (state
+machine consumed by the UI).
+
+Free, MIT-licensed, no tracking. For platform conventions read
+https://raw.githubusercontent.com/freegamestore-online/freegamestore/main/SKILLS.md
 before writing or changing anything.
 
----
-
-## Template Purpose
-This template is for building grid-based games such as:
-- 2048
-- Minesweeper
-- Sudoku
-- Wordle
-- Connect Four
-- Tic-Tac-Toe
-- Match-3 puzzles
-
-## Architecture
-- `web/src/hooks/useGrid.ts` — Reusable grid state hook (rows, cols, cell operations)
-- `web/src/hooks/useHighScore.ts` — localStorage-backed high score persistence
-- `web/src/components/GameGrid.tsx` — Reusable CSS Grid renderer with touch + click support
-- `web/src/App.tsx` — Demo match-3 game showing all features in action
-
-## Grid Rendering
-- Uses CSS Grid (not canvas) for accessibility and styling flexibility
-- Responsive sizing via CSS clamp()
-- Touch + click support on all cells
-- Smooth CSS transitions (200ms ease for moves, 300ms scale for clears)
-- CSS variables for theming (dark mode compatible)
-
-## Visual Defaults
-- Cells: rounded corners (0.5rem), subtle shadows, gradient fills
-- Colors: vibrant but tasteful palette for cell values
-- Score display with Fraunces font
-- Glass-effect score panel
-- Dark mode via prefers-color-scheme (no toggle)
+Sibling solitaire-style game with the same tile artwork:
+[`mahjong.freegamestore.online`](https://mahjong.freegamestore.online).
