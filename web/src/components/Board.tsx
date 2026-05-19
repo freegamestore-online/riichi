@@ -16,7 +16,7 @@ import {
   newGame,
 } from "../engine/game";
 import { glyph, type TileId } from "../engine/tiles";
-import { tilesRemaining } from "../engine/wall";
+import { indicatorToDora, tilesRemaining } from "../engine/wall";
 
 const SEAT_LABELS: Record<Seat, string> = { 0: "You", 1: "Right", 2: "Across", 3: "Left" };
 const SEAT_WIND: Record<Seat, string> = { 0: "E", 1: "S", 2: "W", 3: "N" };
@@ -85,6 +85,13 @@ export function Board() {
     return () => clearTimeout(t);
   }, [state.phase, state.turn, ronAvailable]);
 
+  // Reset riichi-arming mode whenever it stops being valid (e.g. the turn
+  // cycled, the human already declared, or no longer tenpai).
+  const canRiichi = canDeclareRiichi(state) && !state.players[HUMAN_SEAT].riichiDeclared;
+  useEffect(() => {
+    if (!canRiichi && riichiMode) setRiichiMode(false);
+  }, [canRiichi, riichiMode]);
+
   // Fire end-of-hand sounds when the result resolves.
   useEffect(() => {
     if (state.phase === "ended" && !endedRef.current) {
@@ -143,41 +150,71 @@ export function Board() {
   const human = state.players[HUMAN_SEAT];
   const canTsumo = canDeclareTsumo(state);
   const canRon = canDeclareRon(state);
-  const canRiichi = canDeclareRiichi(state) && !state.players[HUMAN_SEAT].riichiDeclared;
   const wallLeft = tilesRemaining(state.wall);
+  const doraTile = state.wall.doraIndicators[0]
+    ? indicatorToDora(state.wall.doraIndicators[0])
+    : null;
 
   return (
-    <div className="relative w-full h-full" style={{ background: "#0e3b21" }}>
+    <div
+      className="relative w-full h-full overflow-hidden"
+      style={{
+        background:
+          "radial-gradient(ellipse at center, #155b32 0%, #0e3b21 60%, #06210f 100%)",
+      }}
+    >
       {/* Opponents: top, left, right */}
       <OpponentRow seat={2} state={state} position="top" />
       <OpponentRow seat={3} state={state} position="left" />
       <OpponentRow seat={1} state={state} position="right" />
 
-      {/* Center: discard piles + wall count */}
+      {/* Center: discard piles + status (responsive to viewport) */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-        <div className="relative" style={{ width: 360, height: 360 }}>
+        <div
+          className="relative"
+          style={{
+            width: "min(70vmin, 460px)",
+            height: "min(70vmin, 460px)",
+          }}
+        >
           <DiscardPile seat={0} state={state} position="bottom" />
           <DiscardPile seat={1} state={state} position="right" />
           <DiscardPile seat={2} state={state} position="top" />
           <DiscardPile seat={3} state={state} position="left" />
           <div
             ref={lastDiscardRef}
-            className="absolute inset-0 flex items-center justify-center text-sm"
-            style={{ color: "rgba(255,255,255,0.55)" }}
+            className="absolute inset-0 flex items-center justify-center"
+            style={{ color: "rgba(255,255,255,0.7)", pointerEvents: "none" }}
           >
-            <div className="text-center">
-              <div style={{ fontSize: 14, opacity: 0.7 }}>{wallLeft} left</div>
-              <div style={{ fontSize: 12, opacity: 0.5 }}>
-                Round {SEAT_WIND[state.roundWind]} · Turn {state.turn}
+            <div
+              className="text-center flex flex-col items-center gap-1 px-3 py-2 rounded-xl"
+              style={{
+                background: "rgba(0,0,0,0.32)",
+                backdropFilter: "blur(4px)",
+              }}
+            >
+              <div style={{ fontSize: 11, opacity: 0.7, letterSpacing: "0.08em" }}>
+                ROUND {SEAT_WIND[state.roundWind]} · TURN {state.turn}
               </div>
+              <div style={{ fontSize: 22, fontWeight: 700 }}>{wallLeft}</div>
+              <div style={{ fontSize: 10, opacity: 0.6 }}>tiles left</div>
+              {doraTile !== null && (
+                <div className="flex items-center gap-2 mt-1">
+                  <span style={{ fontSize: 10, opacity: 0.7 }}>DORA</span>
+                  <Tile tile={doraTile} size="sm" />
+                </div>
+              )}
             </div>
           </div>
         </div>
       </div>
 
       {/* Human hand */}
-      <div className="absolute left-0 right-0 bottom-2 flex flex-col items-center gap-2">
-        <div className="flex gap-1 flex-wrap justify-center px-2">
+      <div className="absolute left-0 right-0 bottom-1 flex flex-col items-center gap-2 pointer-events-none">
+        <div
+          className="flex gap-1 justify-center px-2 pointer-events-auto"
+          style={{ maxWidth: "100vw", overflowX: "auto", flexWrap: "nowrap" }}
+        >
           {human.hand.map((t, i) => (
             <Tile
               key={`${t}-${i}`}
@@ -190,8 +227,8 @@ export function Board() {
           ))}
         </div>
 
-        <div className="flex items-center gap-2 px-3 py-2">
-          {canRiichi && (
+        <div className="flex items-center gap-2 px-3 py-2 pointer-events-auto">
+          {(canRiichi || riichiMode) && (
             <Button onClick={onRiichi} variant={riichiMode ? "danger" : "primary"}>
               {riichiMode ? "Cancel riichi" : "Riichi"}
             </Button>
@@ -211,13 +248,15 @@ export function Board() {
               </Button>
             </>
           )}
-          <div className="text-xs text-white/70 px-2">
+          <div className="text-xs text-white/80 px-2 flex items-center gap-2">
             {state.players[HUMAN_SEAT].riichiDeclared && (
-              <span className="px-2 py-1 rounded bg-yellow-600 text-white text-xs font-bold mr-2">
+              <span className="px-2 py-1 rounded bg-yellow-500 text-black text-xs font-bold">
                 RIICHI
               </span>
             )}
-            Score: <strong className="text-white">{state.scores[HUMAN_SEAT]}</strong>
+            <span>
+              {state.scores[HUMAN_SEAT].toLocaleString()}
+            </span>
           </div>
         </div>
       </div>
@@ -243,10 +282,10 @@ interface TileProps {
 function Tile({ tile, size, highlight, recent, onClick, rotation = 0 }: TileProps) {
   const dims =
     size === "lg"
-      ? { w: 38, h: 50, font: 28 }
+      ? { w: 48, h: 64, font: 36 }
       : size === "md"
-        ? { w: 28, h: 36, font: 20 }
-        : { w: 20, h: 26, font: 14 };
+        ? { w: 32, h: 42, font: 22 }
+        : { w: 22, h: 30, font: 16 };
   return (
     <button
       type="button"
@@ -271,7 +310,7 @@ function Tile({ tile, size, highlight, recent, onClick, rotation = 0 }: TileProp
 }
 
 function TileBack({ size, rotation = 0 }: { size: "sm" | "md"; rotation?: number }) {
-  const dims = size === "md" ? { w: 24, h: 32 } : { w: 18, h: 24 };
+  const dims = size === "md" ? { w: 28, h: 38 } : { w: 22, h: 30 };
   return (
     <div
       className="tile-back"
