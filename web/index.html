@@ -11,6 +11,9 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>riichi — FreeGameStore</title>
+    <!-- Platform analytics loader. CF Web Analytics is auto-provisioned at publish;
+         GA4 / Plausible / custom <head> are opt-in via PUT /v1/apps/riichi/analytics. -->
+    <script src="https://api.freegamestore.online/v1/analytics.js?app=riichi" defer></script>
   </head>
   <body>
     <div id="root"></div>
