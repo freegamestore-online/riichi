@@ -15,7 +15,7 @@ The game engine lives in `web/src/engine/` and is pure TypeScript (no React, no 
 machine consumed by the UI).
 
 Free, MIT-licensed, no tracking. For platform conventions read
-https://raw.githubusercontent.com/freegamestore-online/freegamestore/main/SKILLS.md
+https://freegamestore.online/skills.md
 before writing or changing anything.
 
 Sibling solitaire-style game with the same tile artwork:
